@@ -1,0 +1,13 @@
+{# Renders a tool execution outcome into the agent-facing result format.
+   Context: result = {tool_name, ok, duration_ms, payload|error, resource?, truncated?} -#}
+<tool_response name="{{ result.tool_name }}" duration_ms="{{ result.duration_ms }}">
+{%- if result.ok -%}
+{%- if result.resource %}
+{"ok": true, "resource": "{{ result.resource.uri }}", "mime": "{{ result.resource.mime }}", "note": "result persisted to workspace (>1 MB) — read via resources/read"}
+{%- else %}
+{"ok": true, "result": {{ result.payload | tojson }}{% if result.truncated %}, "truncated": true{% endif %}}
+{%- endif %}
+{%- else %}
+{"ok": false, "error": {"code": "{{ result.error.code }}", "message": "{{ result.error.message }}"{% if result.error.details %}, "details": {{ result.error.details | tojson }}{% endif %}}}
+{%- endif %}
+</tool_response>

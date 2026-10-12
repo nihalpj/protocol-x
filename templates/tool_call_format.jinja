@@ -1,0 +1,26 @@
+{# Renders the server's tool catalog into an agent-facing tool-calling format.
+   Used for hosts/prompts that need prompt-level tool definitions (Hermes/LLaMA style).
+   Context: tools = [ToolSpec], workspace_root = str -#}
+You have access to the following tools, served by Protocol-X Tool MCP (sandboxed, workspace root: {{ workspace_root }}).
+To call a tool, emit a JSON object inside <tool_call>...</tool_call> tags.
+
+<tools>
+{% for tool in tools -%}
+{
+  "name": "{{ tool.name }}",
+  "description": "{{ tool.description }}",
+  "parameters": {{ tool.input_schema | tojson(indent=2) }}
+}{% if not loop.last %},{% endif %}
+{% endfor -%}
+</tools>
+
+Call format:
+<tool_call>
+{"name": "<tool_name>", "arguments": {<arg_dict>}}
+</tool_call>
+
+Rules (enforced server-side, violations return structured errors):
+- arguments must validate against the tool's JSON Schema (additionalProperties: false).
+- file paths are workspace-relative; "../" escapes are rejected.
+- results >1 MB are persisted to the workspace and returned as resource links.
+- binary results arrive as base64 content blocks with an explicit mime type.
