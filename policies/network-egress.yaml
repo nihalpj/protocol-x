@@ -1,0 +1,9 @@
+# network-egress preset (F-032): agents that need web fetch/download.
+# HTTP adapter on with the SSRF guard; standard limits.
+network: egress
+egress_allowlist: []   # empty = all public hosts; set PROTOX_ALLOWED_HOSTS to restrict
+limits:
+  cpu_s: 25
+  rss_mb: 512
+  fs_mb: 100
+per_tool_overrides: {}

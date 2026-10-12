@@ -1,0 +1,33 @@
+# Protocol-X Tool MCP — server configuration example
+# Every key shown with its default. CLI flags and PROTOX_* env vars override this file.
+
+server:
+  host: 127.0.0.1          # HTTP transport bind address (localhost-only by default)
+  port: 7894               # HTTP transport port (console + MCP endpoint)
+  transport: stdio         # stdio | http | both
+
+workspace:
+  root: ~/.local/share/protocol-x/workspace   # all tool file I/O confined here (INV-5)
+
+data_dir: ~/.local/share/protocol-x           # protox.db, audit.jsonl, logs
+
+security:
+  policy_preset: network-egress   # strict | network-egress | permissive-dev (policies/*.yaml)
+  tokens: []                      # bearer tokens (hashed at rest); empty = localhost tokenless
+  tool_acl: {}                    # token -> [tool names] allowlist
+  allowed_hosts: []               # optional HTTP adapter egress allowlist
+  rate_limit_per_min: 60          # per-token sliding window
+
+sandbox:
+  backend: python            # default worker backend (python; node/go-bin/rust-bin in v1.1+)
+  limits:
+    cpu_s: 25
+    rss_mb: 512
+    fs_mb: 100
+  default_timeout_s: 30
+
+models:                       # Nebius Token Factory (agent inference only; INV-8)
+  endpoint: https://api.tokenfactory.nebius.com/v1
+  judge: nvidia/nemotron-3-ultra
+  fast: nvidia/nemotron-3-nano
+  escalation: nvidia/nemotron-3-ultra

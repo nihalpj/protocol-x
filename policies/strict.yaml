@@ -1,0 +1,13 @@
+# strict preset (F-032): production / shared instances.
+# Network off — the HTTP adapter is disabled; tightest limits.
+network: off
+egress_allowlist: []
+limits:
+  cpu_s: 15
+  rss_mb: 256
+  fs_mb: 50
+per_tool_overrides:
+  http_get: { enabled: false }
+  http_post: { enabled: false }
+  http_head: { enabled: false }
+  http_download_file: { enabled: false }
