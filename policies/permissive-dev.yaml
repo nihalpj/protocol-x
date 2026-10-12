@@ -1,6 +1,6 @@
 # permissive-dev preset (F-032): LOCAL DEVELOPMENT ONLY.
 # Relaxed limits; the console shows a loud banner while this preset is active.
-network: on
+network: "on"
 egress_allowlist: []
 limits:
   cpu_s: 60

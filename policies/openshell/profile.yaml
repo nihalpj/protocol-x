@@ -1,0 +1,31 @@
+# OpenShell outer-cage profile (F-034)
+# Runs the Protocol-X Tool MCP container inside an NVIDIA OpenShell sandbox:
+# kernel policy outside (Landlock/seccomp/OPA), rlimits inside (per-call workers).
+# The product is fully functional without OpenShell — this profile is additive.
+version: 1
+name: protocol-x-tool-mcp
+
+# Landlock: filesystem allowlist limited to the workspace + read-only app tree
+landlock:
+  read_only:
+    - /app
+    - /usr
+    - /lib
+    - /lib64
+  read_write:
+    - /data        # workspace volume (protox.db, audit, tool I/O)
+    - /tmp
+
+# seccomp: default-deny with the server/worker syscall profile
+seccomp:
+  default: deny
+  allow_profile: policies/openshell/seccomp-protox.json
+
+# OPA egress policy: Token Factory + PyPI only (see egress.rego)
+network:
+  policy: policies/openshell/egress.rego
+
+# Privacy router: cage-level secrets never enter the container env;
+# the dispatcher injects per call (F-033 / INV-7).
+privacy_router:
+  secrets_from: host

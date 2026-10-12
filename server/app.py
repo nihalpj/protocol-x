@@ -19,7 +19,9 @@ from core.audit import AuditLedger
 from core.db import Store
 from core.logging import JsonlLogger, Metrics, new_call_id
 from core.sandbox.runner import CallRequest, SubprocessRunner
+from core.secrets import SecretsBroker
 from core.serialization import normalize_result
+from core.sizing import SizingProfile, profile_for_settings
 from core.workspace import Workspace
 from server.auth import BearerAuthMiddleware, TokenStore, current_token
 from server.config import Settings
@@ -46,6 +48,30 @@ class AppContext:
         self.metrics = Metrics()
         self.token_store = TokenStore(settings.tokens, settings.tool_acl)
         self.rate_limiter = RateLimiter(settings.rate_limit_per_min)
+        self.secrets = SecretsBroker(settings.secrets)
+        # F-038: compute the host-derived profile once; print + audit-log it.
+        self.sizing: SizingProfile = profile_for_settings(settings)
+        self._apply_policy_overrides()
+        self.audit.record(
+            "config",
+            "server",
+            {
+                "event": "startup",
+                "preset": settings.preset_name,
+                "sizing": self.sizing.to_dict(),
+            },
+        )
+
+    def _apply_policy_overrides(self) -> None:
+        """F-032: preset per-tool overrides (e.g. strict disables http_*)."""
+        disabled = [
+            name
+            for name, flags in self.settings.preset_tool_overrides.items()
+            if isinstance(flags, dict) and flags.get("enabled") is False
+        ]
+        for name in disabled:
+            if self.registry.catalog.pop(name, None) is not None:
+                self.registry.store.tools.delete(name)
 
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict:
         """Validate -> sandbox -> normalize -> log/metrics. Raises ToolError."""
@@ -56,6 +82,7 @@ class AppContext:
             self.token_store.check_acl(token, tool_name)
             self.rate_limiter.check(token)
             spec = self.registry.get_spec(tool_name)
+            args = self.secrets.inject(spec, args)  # F-033 dispatcher-side only
             try:
                 validated = spec.input_model.model_validate(args)
             except PydanticValidationError as exc:

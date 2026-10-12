@@ -63,6 +63,9 @@ class ToolSpec:
     backend: str = "python"  # "python" | "node" | "go-bin" | "rust-bin" (F-036)
     # Declarative size guards surfaced in the description (F-020)
     limits: dict[str, Any] = field(default_factory=dict)
+    # Credential needs (F-033): param name -> server-side secret name; the
+    # dispatcher injects values per call — agents never see them in schema.
+    secret_params: dict[str, str] = field(default_factory=dict)
 
 
 # Adapter modules expose exactly one of:

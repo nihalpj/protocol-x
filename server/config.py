@@ -137,8 +137,9 @@ class Settings:
         return bool(self.tf_api_key)
 
 
-def load_preset(name: str, policies_dir: Path = _POLICIES_DIR) -> dict[str, Any]:
+def load_preset(name: str, policies_dir: Path | None = None) -> dict[str, Any]:
     """Load a policy preset; invalid YAML or unknown keys fail loudly (AC-F032-02)."""
+    policies_dir = policies_dir or _POLICIES_DIR
     path = policies_dir / f"{name}.yaml"
     if not path.exists():
         raise ConfigError(f"unknown policy preset '{name}' (no {path})")

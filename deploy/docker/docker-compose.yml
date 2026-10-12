@@ -1,0 +1,44 @@
+# Protocol-X Tool MCP — hardened compose profile (F-021 + F-038)
+# Compute values below are placeholders; regenerate for your host:
+#   deploy/docker/compute-env.sh > .env   (then: docker compose up -d)
+services:
+  protox:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: protocol-x-tool-mcp:latest
+    container_name: protox
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # F-038 host-derived values (see .env / compute-env.sh)
+    cpus: ${PROTOX_CPUS_LIMIT:-3}
+    mem_limit: ${PROTOX_MEM_LIMIT:-4g}
+    environment:
+      PROTOX_POLICY_PRESET: ${PROTOX_POLICY_PRESET:-network-egress}
+      PROTOX_TOKENS: ${PROTOX_TOKENS:-}
+      PROTOX_TF_API_KEY: ${PROTOX_TF_API_KEY:-}
+      PROTOX_TF_ENDPOINT: ${PROTOX_TF_ENDPOINT:-https://api.tokenfactory.nebius.com/v1}
+      PROTOX_ALLOWED_HOSTS: ${PROTOX_ALLOWED_HOSTS:-}
+      PROTOX_SECRETS: ${PROTOX_SECRETS:-}
+    ports:
+      - "${PROTOX_BIND:-127.0.0.1}:${PROTOX_PORT:-7894}:7894"
+    volumes:
+      - protox-data:/data
+    restart: unless-stopped
+
+  # Strictest posture: no outbound network at all (strict preset).
+  protox-offline:
+    extends: protox
+    container_name: protox-offline
+    network_mode: none
+    profiles: ["network-none"]
+    environment:
+      PROTOX_POLICY_PRESET: strict
+    ports: []
+
+volumes:
+  protox-data:
