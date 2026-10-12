@@ -21,8 +21,10 @@ from core.logging import JsonlLogger, Metrics, new_call_id
 from core.sandbox.runner import CallRequest, SubprocessRunner
 from core.serialization import normalize_result
 from core.workspace import Workspace
+from server.auth import BearerAuthMiddleware, TokenStore, current_token
 from server.config import Settings
 from server.errors import to_mcp_error
+from server.ratelimit import RateLimiter
 from server.registry import ToolRegistry
 
 VERSION = "1.0.0"
@@ -42,12 +44,17 @@ class AppContext:
         self.runner = SubprocessRunner()
         self.logger = JsonlLogger(settings.log_jsonl)
         self.metrics = Metrics()
+        self.token_store = TokenStore(settings.tokens, settings.tool_acl)
+        self.rate_limiter = RateLimiter(settings.rate_limit_per_min)
 
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict:
         """Validate -> sandbox -> normalize -> log/metrics. Raises ToolError."""
         call_id = new_call_id()
         start = time.perf_counter()
         try:
+            token = current_token.get()
+            self.token_store.check_acl(token, tool_name)
+            self.rate_limiter.check(token)
             spec = self.registry.get_spec(tool_name)
             try:
                 validated = spec.input_model.model_validate(args)
@@ -138,5 +145,13 @@ def serve_stdio(ctx: AppContext) -> None:
     create_mcp(ctx).run(transport="stdio", show_banner=False)
 
 
+def build_http_app(ctx: AppContext):
+    """ASGI app: MCP Streamable HTTP + custom routes behind bearer auth (F-013/14)."""
+    mcp = create_mcp(ctx)
+    return BearerAuthMiddleware(mcp.http_app(), ctx.token_store)
+
+
 def serve_http(ctx: AppContext, host: str, port: int) -> None:
-    create_mcp(ctx).run(transport="http", host=host, port=port, show_banner=False)
+    import uvicorn
+
+    uvicorn.run(build_http_app(ctx), host=host, port=port, log_level="warning")
