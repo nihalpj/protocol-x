@@ -57,6 +57,10 @@ class AppContext:
                     "arguments failed schema validation",
                     {"issues": exc.errors()},
                 ) from exc
+            extra_env: dict[str, str] = {}
+            if spec.network and self.settings.allowed_hosts:
+                # operator egress allowlist injected per call (never agent-settable)
+                extra_env["ALLOWED_HOSTS"] = ",".join(self.settings.allowed_hosts)
             req = CallRequest(
                 adapter_module=spec_adapter_module(self.registry, tool_name),
                 tool_name=tool_name,
@@ -66,8 +70,9 @@ class AppContext:
                 network=spec.network,
                 backend=spec.backend,
                 cpu_s=self.settings.limit_cpu_s,
-                rss_mb=self.settings.limit_rss_mb,
+                rss_mb=int(spec.limits.get("rss_mb", self.settings.limit_rss_mb)),
                 fs_mb=self.settings.limit_fs_mb,
+                extra_env=extra_env or None,
             )
             raw = self.runner.run(req)
             result = normalize_result(raw, self.workspace)

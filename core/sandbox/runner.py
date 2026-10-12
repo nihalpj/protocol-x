@@ -27,6 +27,8 @@ _SCRUBBED_ENV = {
     "PYTHONPATH": None,  # filled with the project root at spawn
     "PYTHONUNBUFFERED": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
+    "OPENBLAS_NUM_THREADS": "1",  # OpenBLAS thread pool cannot start under RLIMIT_NPROC=0
+    "OMP_NUM_THREADS": "1",
     "HOME": os.environ.get("HOME", "/tmp"),
     "LANG": "C.UTF-8",
 }
@@ -44,6 +46,9 @@ class CallRequest:
     cpu_s: int = CPU_S
     rss_mb: int = RSS_MB
     fs_mb: int = FS_MB
+    # Operator-controlled per-call env additions (dispatcher-side only, F-033
+    # seam): config values like ALLOWED_HOSTS — never agent input, never secrets.
+    extra_env: dict[str, str] | None = None
 
 
 def _project_root() -> str:
@@ -56,9 +61,11 @@ class SubprocessRunner:
     def __init__(self, project_root: str | None = None):
         self.project_root = project_root or _project_root()
 
-    def worker_env(self) -> dict[str, str]:
+    def worker_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {k: v for k, v in _SCRUBBED_ENV.items() if v is not None}
         env["PYTHONPATH"] = self.project_root
+        if extra:
+            env.update(extra)
         return env
 
     def run(self, req: CallRequest) -> Any:
@@ -79,7 +86,7 @@ class SubprocessRunner:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                env=self.worker_env(),
+                env=self.worker_env(req.extra_env),
                 cwd=self.project_root,
                 preexec_fn=lambda: apply_limits(req.cpu_s, req.rss_mb, req.fs_mb),
             )

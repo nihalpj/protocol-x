@@ -28,6 +28,30 @@ def _transport(tmp_env) -> PythonStdioTransport:
     )
 
 
+LAUNCH_CORE = sorted(
+    [
+        # Pillow (8)
+        "image_info", "image_resize", "image_crop", "image_rotate",
+        "image_convert_format", "image_thumbnail", "image_compress_jpeg",
+        "image_strip_metadata",
+        # requests (4)
+        "http_get", "http_post", "http_head", "http_download_file",
+        # pypdf (6)
+        "pdf_info", "pdf_extract_text", "pdf_merge", "pdf_split",
+        "pdf_rotate_pages", "pdf_extract_images",
+        # python-docx (5)
+        "docx_create", "docx_append_paragraph", "docx_extract_text",
+        "docx_replace_text", "docx_add_table",
+        # openpyxl (5)
+        "xlsx_info", "xlsx_read_range", "xlsx_write_range", "xlsx_create",
+        "xlsx_add_chart",
+        # pandas (6)
+        "csv_info", "csv_read", "csv_filter", "csv_aggregate", "csv_join",
+        "csv_describe",
+    ]
+)
+
+
 async def test_stdio_boot_and_catalog(tmp_env):
     transport = _transport(tmp_env)
     start = time.monotonic()
@@ -35,13 +59,7 @@ async def test_stdio_boot_and_catalog(tmp_env):
         tools = await client.list_tools()
         boot_s = time.monotonic() - start
     names = sorted(t.name for t in tools)
-    assert names == sorted(
-        [
-            "image_info", "image_resize", "image_crop", "image_rotate",
-            "image_convert_format", "image_thumbnail", "image_compress_jpeg",
-            "image_strip_metadata",
-        ]
-    )
+    assert names == LAUNCH_CORE  # 34-tool launch core (P1+P2)
     assert boot_s <= 5.0  # generous CI bound; AC-F001-01 target is 2 s warm
     from jsonschema.validators import validator_for
 
@@ -70,7 +88,7 @@ async def test_health_endpoint(ctx):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["tools"] == 8
+    assert body["tools"] == 34  # launch core after P2
 
 
 def test_image_resize_benchmark(ctx, sample_png):
