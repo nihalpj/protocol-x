@@ -18,8 +18,8 @@ from agents.converter_agent import (
     ConversionRejected,
     ConverterAgent,
     production_merger,
-    run_convert,
 )
+from server.convert_cli import run_convert
 
 
 def _pass_judge(path):

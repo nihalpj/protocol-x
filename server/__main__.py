@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.package:
             print("convert requires a package name", file=sys.stderr)
             return 2
-        from agents.converter_agent import run_convert
+        from server.convert_cli import run_convert
 
         try:
             settings = Settings(config_file=args.config)

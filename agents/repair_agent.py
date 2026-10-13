@@ -111,7 +111,7 @@ class RepairAgent:
     # ------------------------------------------------------------- repair
     def attempt_repair(self, incident_id: int) -> dict[str, Any]:
         """Synchronous repair attempt — also the test seam."""
-        from server.registry import module_source_hash
+        from core.hashing import module_source_hash
 
         ctx = self.ctx
         incident = ctx.store.incidents.get(incident_id)

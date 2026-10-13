@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import json
@@ -23,6 +22,7 @@ from typing import Any
 
 from adapters.base import ADAPTER_ATTRS, TOOL_DISABLED, UNKNOWN_TOOL, ToolError, ToolSpec
 from core.db import Store
+from core.hashing import module_source_hash  # noqa: F401  (re-export, back-compat)
 
 log = logging.getLogger("protox.registry")
 
@@ -50,11 +50,6 @@ def _module_names(adapters_dir: Path = ADAPTERS_DIR) -> list[str]:
             continue
         names.append(path.stem)
     return names
-
-
-def module_source_hash(adapters_dir: Path, module: str) -> str:
-    path = adapters_dir / f"{module}.py"
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class ToolRegistry:

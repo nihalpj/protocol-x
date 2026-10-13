@@ -68,13 +68,14 @@ markers = [
 ]
 
 [tool.importlinter]
-root_package = "server"
+root_packages = ["server", "agents", "core", "adapters"]
 
 [[tool.importlinter.contracts]]
-name = "Layering: server/agents -> core -> adapters"
+name = "Layering: server -> agents -> core -> adapters"
 type = "layers"
 layers = [
-    "server | agents",
+    "server",
+    "agents",
     "core",
     "adapters",
 ]

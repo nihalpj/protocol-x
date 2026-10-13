@@ -280,7 +280,7 @@ class Builder:
         return MergeResult(state="merged", verdict=verdict, tools=tools)
 
     def _record_generated_version(self, module_name: str) -> int:
-        from server.registry import module_source_hash
+        from core.hashing import module_source_hash
 
         digest = module_source_hash(self.ctx.registry.adapters_dir, module_name)
         parent = self.ctx.store.versions.latest(module_name)
@@ -295,7 +295,7 @@ class Builder:
             return MergeResult(state="generation-failed", diagnostics=problems)
         path = self.ctx.registry.adapters_dir / f"{module_name}.py"
         path.write_text(source)
-        from server.registry import module_source_hash
+        from core.hashing import module_source_hash
 
         digest = module_source_hash(self.ctx.registry.adapters_dir, module_name)
         parent = self.ctx.store.versions.latest(module_name)
