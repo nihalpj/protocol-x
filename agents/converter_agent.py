@@ -26,13 +26,22 @@ Pipeline:
      verdicts (deterministic, then LLM repair tier; <= MAX_JUDGE_CYCLES,
      E-10), then auto-merges (PRD v1.4).
 
-ReAct plumbing (trace persistence, checkpoints) comes from `react.py`:
+ReAct plumbing (trace persistence, checkpoints) comes from `agents/react.py`:
 every step is a Thought -> Action -> Observation triple, persisted to
 `<workdir>/react_trace.jsonl` for the audit log (AC-F029-05); an
 interrupted run resumes from the last checkpoint with --resume (E-13).
+Checkpoints are dual-written to the `checkpoints` SQL table so a resume
+survives a process restart (AC-P7-05), and every run opens/closes a
+`conversion_runs` row queryable by outcome and reason_code.
 
-Usage:
-    python3 converter_agent.py <package> [options]
+Production entry point: `run_convert()` (wired to the CLI as
+`protocol-x-tool-mcp convert <package>`). It injects the real seams —
+Nemotron judge (`agents/judge.py`), registry merger, LLM repair/propose
+tiers — when a Token Factory key is configured; without one the judge
+fails closed (E-20) and every conversion ends in rejection.
+
+Standalone demo usage (stub seams, no server):
+    python3 agents/converter_agent.py <package> [options]
 
     --judge {pass,warn,blocked,repair-demo,repair-llm-demo}
                      demo verdict source (real deployments inject the
@@ -66,7 +75,10 @@ from pathlib import Path
 from jinja2 import FileSystemLoader, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
 
-from react import ReActTracer
+try:
+    from agents.react import ReActTracer
+except ImportError:  # direct script execution: python3 agents/converter_agent.py
+    from react import ReActTracer
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
@@ -82,6 +94,25 @@ FAST_MODEL = "nvidia/nemotron-3-nano"     # converter / repair fast loops
 _SIMPLE_ANNOTATIONS = {str: "str", int: "int", float: "float", bool: "bool"}
 _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
 _STAGES = ["imported", "proposed", "codegen", "format", "merged"]
+
+
+def _static_gate(source: str) -> list[str]:
+    """Full static gate (py_compile + INV-1 lint + contract) when the server
+    tree is importable; bare py_compile fallback for standalone demo runs."""
+    try:
+        from agents.codegen import static_gate
+    except ImportError:
+        static_gate = None
+    if static_gate is not None:
+        return static_gate(source)
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
+        fh.write(source)
+        tmp = fh.name
+    try:
+        py_compile.compile(tmp, doraise=True)
+    except py_compile.PyCompileError as exc:
+        return [f"py_compile: {exc.msg}"]
+    return []
 
 
 class ConversionRejected(Exception):
@@ -128,7 +159,8 @@ class ConverterAgent:
                  demo_fault: bool = False, judge=None, merger=None,
                  repairer=None, proposer=None,
                  workdir: str | Path | None = None, resume: bool = False,
-                 stream: bool = False):
+                 stream: bool = False, store=None, run_id: int | None = None,
+                 resume_stage: str | None = None):
         self.package = package
         self.focus = focus
         self.demo_fault = demo_fault
@@ -140,6 +172,9 @@ class ConverterAgent:
         # proposer(module) -> list[ToolProposal]
         self.repairer = repairer
         self.proposer = proposer
+        # DB seams (optional): conversion_runs row + durable checkpoints (AC-P7-05).
+        self.store = store
+        self.run_id = run_id
         self.fix_cycles = 0
         self.judge_cycles = 0
         self.network = False
@@ -156,7 +191,14 @@ class ConverterAgent:
             checkpoint_file=self.workdir / "checkpoint.json",
             stream=stream,
         )
-        self._resume_stage = self.tracer.completed_stage() if resume else None
+        self._resume_stage = resume_stage or (self.tracer.completed_stage() if resume else None)
+
+    # ------------------------------------------------------- DB checkpoints
+    def _checkpoint(self, stage: str, payload: dict | None = None) -> None:
+        """Checkpoint to the workdir file AND the checkpoints table (AC-P7-05)."""
+        self.tracer.checkpoint(stage, payload)
+        if self.store is not None and self.run_id is not None:
+            self.store.checkpoints.save(self.run_id, stage, payload or {})
 
     # ------------------------------------------------------------ pipeline
     def run(self) -> ConversionResult:
@@ -170,10 +212,10 @@ class ConverterAgent:
                 f"{len(proposals)} proposals, 2 artifacts reloaded")
         else:
             mod = self.tracer.act(
-                f"'{self.package}' must become sandboxed tools; start from the installed package, never PyPI guesses",
+                f"'{self.package}' must become sandboxed tools; start from the installed package",
                 f"importlib.import_module({self.package!r})",
                 lambda: importlib.import_module(self.package))
-            self.tracer.checkpoint("imported")
+            self._checkpoint("imported")
 
             proposals = self.tracer.act(
                 "propose a focused tool surface — fixed-signature wrappers only (INV-1)",
@@ -181,26 +223,26 @@ class ConverterAgent:
                 lambda: self._propose(mod))
             if not proposals and self.proposer:
                 proposals = self.tracer.act(
-                    "heuristic surface empty — use the best approach available: LLM proposal fallback (automatic)",
+                    "heuristic surface empty — best approach available: LLM proposal fallback (automatic)",
                     f"proposer({self.package}) via {JUDGE_MODEL} @ Token Factory",
                     lambda: self.proposer(mod))
             if not proposals:
                 self._reject("not-convertible",
                              "no wrappable functions found by heuristic introspection or LLM proposal")
             self._save_proposals(proposals)
-            self.tracer.checkpoint("proposed")
+            self._checkpoint("proposed")
 
             adapter_path = self.tracer.act(
                 f"codegen adapters/{self._mod_name()}.py from adapter.py.jinja",
                 "render(SandboxedEnvironment) + py_compile static gate (E-4)",
                 lambda: self._codegen_adapter(proposals))
-            self.tracer.checkpoint("codegen")
+            self._checkpoint("codegen")
 
             format_path = self.tracer.act(
                 "render the agent-facing tool-call format from tool_call_format.jinja",
                 "render + validate; auto-fix findings (<=3 cycles, AC-F029-06)",
                 lambda: self._render_format_with_fixes(proposals))
-            self.tracer.checkpoint("format")
+            self._checkpoint("format")
 
         verdict = self._judge_with_repairs(adapter_path, proposals)
         merge_note = self.tracer.act(
@@ -208,7 +250,7 @@ class ConverterAgent:
             "registry.register(adapter)",
             lambda: self.merger(adapter_path))
         _ = merge_note
-        self.tracer.checkpoint("merged")
+        self._checkpoint("merged")
         return ConversionResult(
             package=self.package,
             adapter_path=adapter_path,
@@ -266,6 +308,7 @@ class ConverterAgent:
         code = tpl.render(
             rubric_version=RUBRIC_VERSION,
             module_name=self._mod_name(),
+            import_name=self.package,
             package_version=self._version(),
             functions=proposals,
             timeout_s=self.timeout_s,
@@ -274,7 +317,10 @@ class ConverterAgent:
         )
         path = self.workdir / f"{self._mod_name()}.py"
         path.write_text(code)
-        py_compile.compile(str(path), doraise=True)  # static gate (E-4)
+        problems = _static_gate(code)  # py_compile + INV-1 lint + contract (E-4)
+        if problems:
+            self._reject("codegen-static-gate",
+                         "generated adapter failed the static gate", problems)
         return path
 
     # ------------------------------------- step: tool-call format + AUTO-FIX
@@ -311,15 +357,16 @@ class ConverterAgent:
             self.fix_cycles += 1
             if self.fix_cycles > MAX_FIX_CYCLES:
                 self._reject("format-unhealable",
-                             f"auto-fix exhausted ({MAX_FIX_CYCLES} cycles) — conversion rejected (AC-F029-06)",
+                             f"auto-fix exhausted ({MAX_FIX_CYCLES} cycles) — rejected (AC-F029-06)",
                              findings)
             applied = self._apply_format_fixes(findings, schemas)
             if not applied and self.repairer:
                 directive = self.tracer.act(
                     "no deterministic format fix — best-approach LLM repair tier (automatic)",
                     f"repairer({', '.join(findings)}) via {JUDGE_MODEL}",
-                    lambda: self.repairer(findings, list(proposals),
-                                          {"stage": "format", "cycle": self.fix_cycles}))
+                    lambda f=list(findings): self.repairer(
+                        f, list(proposals),
+                        {"stage": "format", "cycle": self.fix_cycles}))
                 if self._apply_directive(directive, proposals):
                     if not proposals:
                         self._reject("not-convertible",
@@ -333,7 +380,7 @@ class ConverterAgent:
                              findings)
             self.tracer.record(
                 f"format validation failed: {', '.join(findings)}",
-                f"auto-fix cycle {self.fix_cycles}/{MAX_FIX_CYCLES}: patch schemas, re-render via tool_call_format.jinja",
+                f"auto-fix cycle {self.fix_cycles}/{MAX_FIX_CYCLES}: patch schemas, re-render",
                 "patched — re-validating", kind="fix")
         raise ConversionRejected("unreachable")
 
@@ -376,7 +423,8 @@ class ConverterAgent:
             self.judge_cycles = cycle
             payload = self.tracer.act(
                 "AI-judge gate — the only merge gate; outage means fail closed (INV-6)",
-                f"judge({adapter_path.name}) via {JUDGE_MODEL} @ Token Factory against {RUBRIC_VERSION} (cycle {cycle}/{MAX_JUDGE_CYCLES})",
+                f"judge({adapter_path.name}) via {JUDGE_MODEL} @ Token Factory "
+                f"against {RUBRIC_VERSION} (cycle {cycle}/{MAX_JUDGE_CYCLES})",
                 lambda: self.judge(adapter_path))
             verdict, findings = self._normalize_verdict(payload)
             if verdict != "blocked":
@@ -389,8 +437,8 @@ class ConverterAgent:
                     directive = self.tracer.act(
                         "deterministic repairs exhausted — best-approach LLM repair tier (automatic)",
                         f"repairer({'; '.join(findings) or 'blocked'}) via {JUDGE_MODEL}",
-                        lambda: self.repairer(findings, list(proposals),
-                                              {"stage": "judge", "cycle": cycle}))
+                        lambda f=list(findings), c=cycle: self.repairer(
+                            f, list(proposals), {"stage": "judge", "cycle": c}))
                     repaired = self._apply_directive(directive, proposals)
                     if repaired:
                         if not proposals:
@@ -403,13 +451,17 @@ class ConverterAgent:
                 f"judge blocked the adapter (cycle {cycle}/{MAX_JUDGE_CYCLES})"
                 + (f": {'; '.join(findings)}" if findings else ""),
                 "repair adapter per findings, re-render, re-submit" if repaired
-                else "no repair approach (deterministic or LLM) applies",
-                "patched — re-judging" if repaired else "unrepairable",
+                else ("repair budget exhausted" if cycle >= MAX_JUDGE_CYCLES
+                      else "no repair approach (deterministic or LLM) applies"),
+                "patched — re-judging" if repaired
+                else ("exhausted" if cycle >= MAX_JUDGE_CYCLES else "unrepairable"),
                 kind="fix")
             if not repaired:
-                self._reject("judge-blocked-unrepairable",
-                             "judge blocked and no repair approach applies — conversion rejected (E-10)",
-                             history)
+                if cycle < MAX_JUDGE_CYCLES:
+                    self._reject("judge-blocked-unrepairable",
+                                 "judge blocked and no repair approach applies — conversion rejected (E-10)",
+                                 history)
+                break  # final cycle still blocked after repairs -> exhausted
         self._reject("judge-blocked-exhausted",
                      f"judge still blocking after {MAX_JUDGE_CYCLES} cycles — conversion rejected (E-10)",
                      history)
@@ -444,7 +496,8 @@ class ConverterAgent:
         return False
 
     def _apply_directive(self, directive, proposals: list[ToolProposal]) -> bool:
-        """Apply an LLM-repair directive {drop_tools, network, timeout_s}. Returns True if it changed anything."""
+        """Apply an LLM-repair directive {drop_tools, network, timeout_s}.
+        Returns True if it changed anything."""
         if not directive:
             return False
         changed = False
@@ -510,6 +563,242 @@ class ConverterAgent:
         return [ToolProposal(tool_name=p["tool_name"], target=p["target"],
                              description=p["description"],
                              args=[Arg(**a) for a in p["args"]]) for p in raw]
+
+
+# ------------------------------------------------------- production seams
+def production_judge(settings, module_name: str):
+    """Real Nemotron judge seam. No Token Factory key -> None -> the agent's
+    fail-closed default (blocked) applies (E-20 degraded mode, INV-6)."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.judge import Judge, JudgeUnavailable
+    from agents.tokenfactory import TokenFactoryClient
+
+    judge = Judge(
+        TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint),
+        settings.tf_judge_model,
+    )
+
+    def _judge(path: Path):
+        try:
+            verdict = judge.review(path.read_text(), module_name)
+        except JudgeUnavailable as exc:
+            # Fail closed: an unreachable judge is a blocked verdict (E-5).
+            return {"verdict": "blocked", "findings": [f"judge unavailable: {exc}"]}
+        return {
+            "verdict": verdict.verdict,
+            "findings": [str(f.get("message", f)) for f in verdict.findings],
+        }
+
+    return _judge
+
+
+def production_merger(ctx, module_name: str):
+    """Merge a judge-passed adapter into the live registry: copy into
+    adapters/, record a version row, refresh, mark tools live (PRD v1.4)."""
+
+    def _merge(path: Path) -> str:
+        from server.registry import module_source_hash
+
+        target = ctx.registry.adapters_dir / f"{module_name}.py"
+        if target.exists():
+            # E-7: never clobber a manually-edited adapter — land as a draft.
+            draft = target.with_suffix(".draft.py")
+            shutil.copy2(path, draft)
+            ctx.audit.record("merge", "converter",
+                             {"module": module_name, "state": "draft", "reason": "E-7"})
+            return f"wrote {draft.name} (existing adapter preserved, E-7)"
+        shutil.copy2(path, target)
+        digest = module_source_hash(ctx.registry.adapters_dir, module_name)
+        parent = ctx.store.versions.latest(module_name)
+        version_id = ctx.store.versions.add(
+            module_name, digest, "generated",
+            parent_id=parent["id"] if parent else None)
+        ctx.registry.refresh_module(module_name)
+        tools = [e.name for e in ctx.registry.catalog.values()
+                 if e.adapter_module == module_name]
+        for name in tools:
+            ctx.registry.set_state(name, "live")
+            ctx.store.tools.upsert(name, "live", module_name, "python", version_id)
+        ctx.audit.record("merge", "converter", {"module": module_name, "tools": tools})
+        return f"auto-merged {module_name}: {len(tools)} tools live"
+
+    return _merge
+
+
+def llm_repairer(settings):
+    """LLM repair tier (fast model): findings -> directive dict, or None.
+
+    The model only steers bounded mutations (drop tools, network off, clamp
+    timeout) — it never writes adapter code, so INV-1 cannot be reintroduced."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.tokenfactory import InferenceError, TokenFactoryClient
+
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint)
+
+    def repair(findings, proposals, context):
+        prompt = (
+            "A generated MCP tool adapter was rejected. Findings:\n"
+            + "\n".join(f"- {f}" for f in findings)
+            + f"\n\nCurrent tools: {', '.join(p.tool_name for p in proposals)}.\n"
+            "Respond with ONLY a JSON object with any of: "
+            '{"drop_tools": ["tool_name"], "network": false, "timeout_s": 15}'
+        )
+        try:
+            completion = client.chat(
+                settings.tf_fast_model,
+                [{"role": "user", "content": prompt}],
+            )
+            text = completion.content.strip()
+            if text.startswith("```"):
+                text = text.strip("`").removeprefix("json").strip()
+            data = json.loads(text)
+        except (InferenceError, json.JSONDecodeError, KeyError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        directive: dict = {}
+        if isinstance(data.get("drop_tools"), list):
+            directive["drop_tools"] = [str(t) for t in data["drop_tools"]]
+        if data.get("network") is False:
+            directive["network"] = False
+        if "timeout_s" in data:
+            directive["timeout_s"] = data["timeout_s"]
+        return directive or None
+
+    return repair
+
+
+def llm_proposer(settings):
+    """LLM proposal fallback (fast model) for zero-surface packages.
+
+    The model picks from functions introspected on the installed package —
+    it can only select and describe, never invent callables (INV-1)."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.tokenfactory import InferenceError, TokenFactoryClient
+
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint)
+
+    def propose(mod) -> list[ToolProposal]:
+        candidates = [
+            name for name, fn in inspect.getmembers(mod, inspect.isfunction)
+            if not name.startswith("_") and fn.__module__ == mod.__name__
+        ]
+        if not candidates:
+            return []
+        prompt = (
+            f"Package '{mod.__name__}' exposes: {', '.join(candidates[:50])}.\n"
+            f"Pick up to {MAX_TOOLS} functions worth exposing as sandboxed MCP tools. "
+            "Respond with ONLY a JSON array: "
+            '[{"target": "<function>", "description": "<one line, no quotes>"}]'
+        )
+        try:
+            completion = client.chat(
+                settings.tf_fast_model, [{"role": "user", "content": prompt}])
+            text = completion.content.strip()
+            if text.startswith("```"):
+                text = text.strip("`").removeprefix("json").strip()
+            data = json.loads(text)
+        except (InferenceError, json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        prefix = re.sub(r"[^a-z0-9]+", "_", mod.__name__.lower()).strip("_")[:12]
+        out: list[ToolProposal] = []
+        for item in data[:MAX_TOOLS]:
+            if not isinstance(item, dict) or item.get("target") not in candidates:
+                continue
+            fn = getattr(mod, item["target"])
+            args = ConverterAgent._simple_args(fn)
+            if args is None:
+                args = []  # simplified wrapper: fixed signature, no exotic params
+            doc = ConverterAgent._sanitize(str(item.get("description") or item["target"]))
+            out.append(ToolProposal(
+                tool_name=f"{prefix}_{item['target']}",
+                target=item["target"],
+                description=doc[:120],
+                args=args))
+        return out
+
+    return propose
+
+
+def run_convert(package: str, settings, *, focus: str | None = None,
+                resume: bool = False, stream: bool = False,
+                workdir: str | Path | None = None, ctx=None) -> int:
+    """Production entry point (CLI `convert`): DB-tracked, registry-merging run.
+
+    Returns 0 on merge, 2 on rejection/error. Degraded mode (no Token
+    Factory key) is announced explicitly and fails closed (E-20)."""
+    if ctx is None:
+        from server.app import AppContext
+
+        ctx = AppContext(settings)
+    store = ctx.store
+    mod_name = re.sub(r"[^a-z0-9]+", "_", package.lower()).strip("_")
+
+    run_id: int | None = None
+    resume_stage: str | None = None
+    if resume:
+        row = store.runs.latest_open(package)
+        if row:
+            run_id = int(row["id"])
+            workdir = workdir or row["workdir"]
+            ckpt = store.checkpoints.load(run_id)
+            resume_stage = ckpt["stage"] if ckpt else None
+            print(f"resuming run {run_id} from checkpoint "
+                  f"'{resume_stage}' (workdir {workdir})")
+        else:
+            print(f"no open conversion run for '{package}' — starting fresh")
+            resume = False
+    if run_id is None:
+        if workdir is None:
+            workdir = settings.data_dir / "conversions" / f"{mod_name}-{int(time.time())}"
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        run_id = store.runs.open(
+            package, str(workdir), str(workdir / "react_trace.jsonl"))
+
+    if not settings.agent_features_enabled:
+        print("degraded mode (E-20): PROTOX_TF_API_KEY not set — the AI-judge "
+              "fails closed, so this conversion will be rejected after its "
+              "bounded repair cycles")
+
+    agent = ConverterAgent(
+        package, focus=focus,
+        judge=production_judge(settings, mod_name),
+        merger=production_merger(ctx, mod_name),
+        repairer=llm_repairer(settings),
+        proposer=llm_proposer(settings),
+        workdir=workdir, resume=resume, stream=stream,
+        store=store, run_id=run_id, resume_stage=resume_stage)
+    try:
+        result = agent.run()
+    except ConversionRejected as exc:
+        code = str(exc).split(":", 1)[0]
+        store.runs.close(run_id, "rejected", reason_code=code,
+                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles)
+        print(f"\nREJECTED: {exc}")
+        print(f"rejection record: {agent.workdir / 'rejection.json'} (run {run_id})")
+        return 2
+    except Exception as exc:
+        store.runs.close(run_id, "error", reason_code=type(exc).__name__,
+                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles)
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        print(f"workdir kept for inspection/resume: {agent.workdir} (run {run_id})")
+        return 2
+
+    store.runs.close(run_id, "merged",
+                     fix_cycles=result.fix_cycles, judge_cycles=result.judge_cycles)
+    if not stream:
+        agent.tracer.print_all()
+    print(f"\nverdict={result.verdict} fix_cycles={result.fix_cycles} "
+          f"judge_cycles={result.judge_cycles}")
+    print(f"tools: {', '.join(result.tools)}")
+    print(f"trace: {agent.workdir / 'react_trace.jsonl'} (run {run_id})")
+    return 0
 
 
 # --------------------------------------------------------------------- CLI

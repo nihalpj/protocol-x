@@ -29,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("package", nargs="?")
     convert.add_argument("--focus", default=None)
     convert.add_argument("--resume", action="store_true")
+    convert.add_argument("--stream", action="store_true")
+    convert.add_argument("--workdir", default=None)
+    convert.add_argument("--config", default=None, help="path to server.yaml")
 
     sub.add_parser("version", help="print version")
     return parser
@@ -60,8 +63,19 @@ def main(argv: list[str] | None = None) -> int:
         print("setup wizard lands in P9; see docs/quickstart.md for manual setup", file=sys.stderr)
         return 0
     if args.command == "convert":
-        print("converter agent lands in P7; see agents/converter_agent.py skeleton", file=sys.stderr)
-        return 0
+        if not args.package:
+            print("convert requires a package name", file=sys.stderr)
+            return 2
+        from agents.converter_agent import run_convert
+
+        try:
+            settings = Settings(config_file=args.config)
+        except ConfigError as exc:
+            print(f"config error: {exc}", file=sys.stderr)
+            return 2
+        return run_convert(
+            args.package, settings, focus=args.focus, resume=args.resume,
+            stream=args.stream, workdir=args.workdir)
     build_parser().print_help()
     return 0
 
