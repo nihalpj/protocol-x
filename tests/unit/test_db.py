@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
+
+import pytest
 
 from core.db import Store
 
@@ -52,6 +55,42 @@ def test_m002_upgrade_preserves_incidents(tmp_path):
     iid = store.incidents.add("t1", "ADAPTER_ERROR")
     store.incidents.set_state(iid, "healed", 1)
     assert store.incidents.get(iid)["state"] == "healed"
+    store.close()
+
+
+def test_m003_upgrade_preserves_runs(tmp_path):
+    """A pre-m003 database upgrades in place: run rows survive the rebuild and
+    the widened outcome/reason vocabulary becomes writable."""
+    from core.db import _MIGRATIONS_DIR, connect
+
+    db = tmp_path / "protox.db"
+    conn = connect(db)
+    conn.executescript((_MIGRATIONS_DIR / "m001_initial.sql").read_text())
+    conn.executescript((_MIGRATIONS_DIR / "m002_repair_healed.sql").read_text())
+    conn.execute(
+        "INSERT INTO schema_migrations(version, applied_ts) VALUES "
+        "('m001_initial', 1.0), ('m002_repair_healed', 1.0)"
+    )
+    conn.execute(
+        "INSERT INTO conversion_runs(package, workdir, trace_path, started_ts) "
+        "VALUES ('pyfiglet', '/tmp/wd', '/tmp/wd/trace.jsonl', 1.0)"
+    )
+    conn.close()
+
+    store = Store(db)  # applies m003
+    run = store.runs.query(package="pyfiglet")[0]
+    assert run["outcome"] is None
+    # 'codegen-static-gate' rejection is now recordable
+    store.runs.close(run["id"], "rejected", "codegen-static-gate")
+    assert store.runs.get(run["id"])["reason_code"] == "codegen-static-gate"
+    # unexpected-error terminal state: outcome 'error', reason_code NULL
+    rid = store.runs.open("boom", "/tmp/wd2", "/tmp/wd2/trace.jsonl")
+    store.runs.close(rid, "error")
+    assert store.runs.get(rid)["outcome"] == "error"
+    # vocabulary is still enforced
+    rid2 = store.runs.open("bad", "/tmp/wd3", "/tmp/wd3/trace.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.runs.close(rid2, "error", "RuntimeError")
     store.close()
 
 

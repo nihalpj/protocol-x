@@ -4,6 +4,11 @@ Also home of the app's human-readable logging setup: `setup_logging()`
 configures stdlib logging (level from PROTOX_LOG_LEVEL / server.yaml /
 --log-level), `get_logger()` hands out `protox.<module>` loggers, and
 `fmt_obj()` safely prints arbitrary objects (capped repr) into log lines.
+
+Opt-in payload capture (F-016): `JsonlLogger(scrub=...)` +
+`log_call(request=..., response=...)` append scrubbed, length-capped
+request/response fields to the JSONL line; the console toggle gates it at
+dispatch time and it never raises.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -22,6 +28,26 @@ from typing import Any
 _LOCK = threading.Lock()
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+# F-016 payload capture: serialized request/response fields share the same
+# 4000-char budget the repair agent uses for captured inputs.
+PAYLOAD_MAX_CHARS = 4000
+
+
+def payload_field(obj: Any, scrub: Callable[[str], str] | None) -> str | None:
+    """Serialize a payload for the JSONL line: dumps -> scrub -> capped length.
+
+    Observability must never break dispatch: any serialization/scrub failure
+    degrades to None (the field is omitted), matching the logging path's
+    never-raise discipline.
+    """
+    try:
+        text = json.dumps(obj, default=str)
+        if scrub is not None:
+            text = scrub(text)
+        return text[:PAYLOAD_MAX_CHARS]
+    except Exception:  # noqa: BLE001 - payload capture must never raise
+        return None
 
 
 def setup_logging(level: str = "INFO", log_file: str | Path | None = None) -> None:
@@ -67,13 +93,25 @@ def new_call_id() -> str:
 
 
 class JsonlLogger:
-    """JSON-lines tool-call log: tool_call_id, tool, duration_ms, exit, size."""
+    """JSON-lines tool-call log: tool_call_id, tool, duration_ms, exit, size.
 
-    def __init__(self, path: str | Path | None = None, also_stderr: bool = True):
+    Optional payload capture (F-016): when `scrub` is provided it redacts
+    registered secret values (SecretsBroker.scrub_text) from serialized
+    request/response fields; `log_call(request=..., response=...)` then adds
+    them to the line. Serialization never raises — failures omit the field.
+    """
+
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        also_stderr: bool = True,
+        scrub: Callable[[str], str] | None = None,
+    ):
         self.path = Path(path) if path else None
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.also_stderr = also_stderr
+        self.scrub = scrub
         self._pylogger = logging.getLogger("protox")
 
     def log_call(
@@ -86,6 +124,8 @@ class JsonlLogger:
         result_size: int = 0,
         error_code: str | None = None,
         extra: dict[str, Any] | None = None,
+        request: Any = None,
+        response: Any = None,
     ) -> dict[str, Any]:
         line: dict[str, Any] = {
             "ts": time.time(),
@@ -100,6 +140,14 @@ class JsonlLogger:
             line["error_code"] = error_code
         if extra:
             line.update(extra)
+        if request is not None:
+            request_text = payload_field(request, self.scrub)
+            if request_text is not None:
+                line["request"] = request_text
+        if response is not None:
+            response_text = payload_field(response, self.scrub)
+            if response_text is not None:
+                line["response"] = response_text
         encoded = json.dumps(line, default=str)
         with _LOCK:
             if self.path:

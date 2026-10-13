@@ -59,11 +59,12 @@ class AppContext:
             self.runner = PooledRunner(max_workers=max(1, size))
         else:
             self.runner = SubprocessRunner()
-        self.logger = JsonlLogger(settings.log_jsonl)
+        self.secrets = SecretsBroker(settings.secrets)
+        # F-016: tool-call log scrubs registered secret values from payloads.
+        self.logger = JsonlLogger(settings.log_jsonl, scrub=self.secrets.scrub_text)
         self.metrics = Metrics()
         self.token_store = TokenStore(settings.tokens, settings.tool_acl)
         self.rate_limiter = RateLimiter(settings.rate_limit_per_min)
-        self.secrets = SecretsBroker(settings.secrets)
         self._apply_policy_overrides()
         from agents.repair_agent import RepairAgent
 
@@ -97,11 +98,28 @@ class AppContext:
             if self.registry.catalog.pop(name, None) is not None:
                 self.registry.store.tools.delete(name)
 
+    def rebuild_repairer(self) -> None:
+        """Re-create the repair agent after an operator TF key rotation.
+
+        RepairAgent snapshots the Token Factory key at construction
+        (agents/repair_agent.py), so a console-side key change must rebuild
+        it to hot-apply without a restart. A repairer that is absent stays
+        absent (disabled-mode consistency)."""
+        if self.repairer is None:
+            return
+        from agents.repair_agent import RepairAgent
+
+        self.repairer = RepairAgent(self)
+
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict:
         """Validate -> sandbox -> normalize -> log/metrics. Raises ToolError."""
         call_id = new_call_id()
         start = time.perf_counter()
         log.debug("dispatch %s call_id=%s args=%s", tool_name, call_id, fmt_obj(args))
+        # F-016 payload capture: read live so the console toggle hot-applies,
+        # and keep the caller-supplied args pre-injection (secrets never logged).
+        payloads_on = self.settings.log_payloads
+        request_args = args
         try:
             token = current_token.get()
             self.token_store.check_acl(token, tool_name)
@@ -136,18 +154,38 @@ class AppContext:
             raw = self.runner.run(req)
             result = normalize_result(raw, self.workspace)
             duration = (time.perf_counter() - start) * 1000
-            self.logger.log_call(
-                call_id, tool_name, duration, "ok", result_size=len(str(result))
-            )
+            if payloads_on:
+                self.logger.log_call(
+                    call_id,
+                    tool_name,
+                    duration,
+                    "ok",
+                    result_size=len(str(result)),
+                    request=request_args,
+                    response=result,
+                )
+            else:
+                self.logger.log_call(call_id, tool_name, duration, "ok", result_size=len(str(result)))
             self.metrics.observe(tool_name, duration)
             log.info("tool %s ok in %.1fms (call_id=%s)", tool_name, duration, call_id)
             log.debug("tool %s result: %s", tool_name, fmt_obj(result))
             return {"tool_call_id": call_id, "tool": tool_name, "result": result}
         except ToolError as exc:
             duration = (time.perf_counter() - start) * 1000
-            self.logger.log_call(
-                call_id, tool_name, duration, "error", exit_code=1, error_code=exc.code
-            )
+            if payloads_on:
+                self.logger.log_call(
+                    call_id,
+                    tool_name,
+                    duration,
+                    "error",
+                    exit_code=1,
+                    error_code=exc.code,
+                    request=request_args,
+                )
+            else:
+                self.logger.log_call(
+                    call_id, tool_name, duration, "error", exit_code=1, error_code=exc.code
+                )
             self.metrics.observe(tool_name, duration, exc.code)
             log.warning(
                 "tool %s failed [%s] in %.1fms: %s", tool_name, exc.code, duration, exc.message
@@ -168,6 +206,10 @@ def create_mcp(ctx: AppContext) -> FastMCP:
 
     for entry in ctx.registry.list_tools():
         mcp.add_tool(_make_tool(ctx, entry))
+
+    from server.operator_tools import register_operator_tools
+
+    register_operator_tools(mcp, ctx)
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(_request: Request) -> JSONResponse:

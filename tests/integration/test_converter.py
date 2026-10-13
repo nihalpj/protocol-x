@@ -134,6 +134,24 @@ def test_run_convert_degraded_mode_fails_closed(ctx, settings):
     assert rows[0]["package"] == "textwrap" and rows[0]["outcome"] == "rejected"
 
 
+def test_run_convert_unexpected_error_closes_run(ctx, settings, workdir,
+                                                 monkeypatch):
+    """Regression: a crashing agent must close the run within the reason_code
+    vocabulary — previously the close itself raised IntegrityError (arbitrary
+    exception names are not valid reason codes) and the run stayed open."""
+    class Boom(Exception):
+        pass
+
+    def boom(self):
+        raise Boom("simulated agent crash")
+
+    monkeypatch.setattr(ConverterAgent, "run", boom)
+    rc = run_convert("textwrap", settings, ctx=ctx, workdir=workdir)
+    assert rc == 2
+    rows = ctx.store.runs.query(package="textwrap", outcome="error")
+    assert len(rows) == 1 and rows[0]["reason_code"] is None
+
+
 def test_production_merger_makes_tools_live(ctx, workdir):
     agent = ConverterAgent(
         "textwrap", judge=_pass_judge,

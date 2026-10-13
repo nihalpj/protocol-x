@@ -57,6 +57,9 @@ export interface LogLine {
   exit_code: number;
   result_size: number;
   error_code?: string;
+  /** F-016 payload capture — present only while log_payloads is enabled. */
+  request?: string;
+  response?: string;
 }
 
 export interface ConfigValue<T> {
@@ -80,6 +83,8 @@ export interface ConsoleConfig {
     fast: ConfigValue<string>;
   };
   agent_features_enabled: boolean;
+  log_payloads: boolean;
+  api_key_set: boolean;
   sizing_overrides: Record<string, string>;
 }
 
@@ -88,6 +93,8 @@ export interface ConfigUpdate {
   tf_judge_model?: string;
   tf_fast_model?: string;
   preset?: string;
+  log_payloads?: boolean;
+  tf_api_key?: string;
 }
 
 export interface ConfigUpdateResult {

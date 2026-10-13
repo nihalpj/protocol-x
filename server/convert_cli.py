@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from agents.converter_agent import (
@@ -23,11 +24,15 @@ from agents.converter_agent import (
 
 def run_convert(package: str, settings, *, focus: str | None = None,
                 resume: bool = False, stream: bool = False,
-                workdir: str | Path | None = None, ctx=None) -> int:
+                workdir: str | Path | None = None, ctx=None,
+                on_run_opened: Callable[[int], None] | None = None) -> int:
     """Production entry point (CLI `convert`): DB-tracked, registry-merging run.
 
     Returns 0 on merge, 2 on rejection/error. Degraded mode (no Token
-    Factory key) is announced explicitly and fails closed (E-20)."""
+    Factory key) is announced explicitly and fails closed (E-20).
+    `on_run_opened` (if given) is invoked with the run_id as soon as the
+    conversion_runs row is known — used by the MCP operator tools to hand
+    the id back to the caller while the run continues in the background."""
     if ctx is None:
         from server.app import AppContext
 
@@ -56,6 +61,8 @@ def run_convert(package: str, settings, *, focus: str | None = None,
         workdir.mkdir(parents=True, exist_ok=True)
         run_id = store.runs.open(
             package, str(workdir), str(workdir / "react_trace.jsonl"))
+    if on_run_opened is not None:
+        on_run_opened(run_id)
 
     if not settings.agent_features_enabled:
         print("degraded mode (E-20): PROTOX_TF_API_KEY not set — the AI-judge "
@@ -80,7 +87,9 @@ def run_convert(package: str, settings, *, focus: str | None = None,
         print(f"rejection record: {agent.workdir / 'rejection.json'} (run {run_id})")
         return 2
     except Exception as exc:
-        store.runs.close(run_id, "error", reason_code=type(exc).__name__,
+        # reason_code vocabulary is rejection-only (m003); unexpected errors
+        # close with NULL — the exception detail lives in the workdir trace.
+        store.runs.close(run_id, "error",
                          fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles)
         print(f"\nERROR: {type(exc).__name__}: {exc}")
         print(f"workdir kept for inspection/resume: {agent.workdir} (run {run_id})")

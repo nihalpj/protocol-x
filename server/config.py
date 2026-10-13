@@ -23,6 +23,26 @@ class ConfigError(Exception):
     pass
 
 
+_BOOL_TRUTHY = {"1", "true", "yes", "on"}
+_BOOL_FALSY = {"0", "false", "no", "off"}
+
+
+def _parse_bool_flag(value: Any, *, source: str) -> bool:
+    """Boolean env/YAML flag: true/false/1/0/yes/no/on/off; anything else fails loudly."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _BOOL_TRUTHY:
+            return True
+        if lowered in _BOOL_FALSY:
+            return False
+    raise ConfigError(
+        f"invalid boolean for {source}: {value!r} "
+        "(expected true, false, 1, 0, yes, no, on or off)"
+    )
+
+
 class Settings:
     def __init__(self, env: dict[str, str] | None = None, config_file: str | None = None):
         env = dict(os.environ if env is None else env)
@@ -152,6 +172,12 @@ class Settings:
                 f"invalid log level {self.log_level!r} "
                 "(expected DEBUG, INFO, WARNING, ERROR or CRITICAL)"
             )
+        # F-016 payload capture: PROTOX_LOG_PAYLOADS / logging.log_payloads / off
+        payloads_env = env.get("PROTOX_LOG_PAYLOADS") or None
+        self.log_payloads = _parse_bool_flag(
+            payloads_env if payloads_env is not None else log_cfg.get("log_payloads", False),
+            source="PROTOX_LOG_PAYLOADS" if payloads_env is not None else "logging.log_payloads",
+        )
 
     @property
     def db_path(self) -> Path:

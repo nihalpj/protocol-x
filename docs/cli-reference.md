@@ -124,6 +124,8 @@ uv run protocol-x-tool-mcp convert numpy --focus "array creation" --stream
 uv run protocol-x-tool-mcp convert httpx --resume
 ```
 
+The same pipeline is available to MCP clients as operator tools (`server/operator_tools.py`): `package_install` (download a PyPI package into the server environment), `package_introspect`, `package_convert` (background run, returns a `run_id`), and `package_convert_status` (poll outcome; on merge the new tools are hot-registered and callable without a restart). `package_convert_bulk` converts up to 10 packages in one sequential background batch with per-package failure isolation, polled via `package_convert_status(batch_id=...)`. Like the REST console, these run in the server process rather than the sandbox; bearer auth plus the per-token ACL and rate limit apply.
+
 ## `version`
 
 Prints the version and exits `0` — identical to `--version`.

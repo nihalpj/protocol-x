@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from agents.codegen import Builder, introspect_package, render_tool_format, static_gate
+from agents.codegen import (
+    Builder,
+    introspect_package,
+    render_adapter,
+    render_tool_format,
+    static_gate,
+)
 
 
 @pytest.fixture()
@@ -94,6 +100,25 @@ def test_regeneration_writes_draft(builder):
     result = builder.generate("json", ["dumps"])
     assert result["path"].endswith(".draft.py")
     assert module_path.read_text().startswith("# manual edit")
+
+
+def test_zero_arg_function_renders_valid_python():
+    """Regression: a zero-arg target rendered 'def f(ws, *, ) ->' (SyntaxError),
+    failing the static gate. The keyword-only marker must be omitted."""
+    source = render_adapter(
+        "demo", "json", "1.0",
+        [{
+            "tool_name": "demo_noop",
+            "model_name": "DemoNoopIn",
+            "target": "loads",
+            "description": "zero-arg wrapper",
+            "args": [],
+            "skipped": [],
+        }],
+        "demo-agent",
+    )
+    assert "def demo_noop(ws) -> dict[str, Any]:" in source
+    assert static_gate(source) == []
 
 
 def test_tool_format_preview(builder, ctx):

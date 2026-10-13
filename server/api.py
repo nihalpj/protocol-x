@@ -94,6 +94,8 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                     "fast": {"value": s.tf_fast_model, "source": "env/config"},
                 },
                 "agent_features_enabled": s.agent_features_enabled,
+                "log_payloads": s.log_payloads,
+                "api_key_set": bool(s.tf_api_key),
                 "sizing_overrides": ctx.sizing.overrides,
             }
         )
@@ -101,10 +103,20 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
     @mcp.custom_route("/api/config", methods=["POST"])
     async def api_config_post(req: Request) -> JSONResponse:
         body = await req.json()
-        allowed = {"tf_endpoint", "tf_judge_model", "tf_fast_model", "preset"}
+        allowed = {
+            "tf_endpoint", "tf_judge_model", "tf_fast_model", "preset",
+            "log_payloads", "tf_api_key",
+        }
         updates = {k: v for k, v in body.items() if k in allowed}
         if not updates:
             return JSONResponse({"error": "no recognized keys", "allowed": sorted(allowed)}, status_code=400)
+        if "log_payloads" in updates and not isinstance(updates["log_payloads"], bool):
+            return JSONResponse({"error": "log_payloads must be a boolean"}, status_code=400)
+        if "tf_api_key" in updates:
+            if not isinstance(updates["tf_api_key"], str):
+                return JSONResponse({"error": "tf_api_key must be a string"}, status_code=400)
+            if not updates["tf_api_key"]:
+                updates.pop("tf_api_key")  # empty string = keep the existing key
         s = ctx.settings
         if "tf_endpoint" in updates:
             s.tf_endpoint = str(updates["tf_endpoint"])
@@ -112,7 +124,17 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
             s.tf_judge_model = str(updates["tf_judge_model"])
         if "tf_fast_model" in updates:
             s.tf_fast_model = str(updates["tf_fast_model"])
+        if "log_payloads" in updates:
+            s.log_payloads = updates["log_payloads"]
+        key_rotated = False
+        if "tf_api_key" in updates:
+            s.tf_api_key = updates["tf_api_key"]
+            key_rotated = True
+            ctx.rebuild_repairer()  # RepairAgent snapshots the key at construction
         before = {"preset": s.preset_name, **updates}
+        if key_rotated:
+            # the key value itself never enters the audit trail (INV-7)
+            before["tf_api_key"] = "***updated***"
         # persist under data_dir; env still wins on restart (documented).
         # Merge into the existing file so wizard-written keys (api_key,
         # tokens, workspace) survive a console settings update.
@@ -127,9 +149,16 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         models.update({
             "endpoint": s.tf_endpoint, "judge": s.tf_judge_model, "fast": s.tf_fast_model,
         })
+        if key_rotated:
+            # write-only: persisted once at rotation, never echoed back
+            models["api_key"] = s.tf_api_key
         existing["models"] = models
-        cfg_path.write_text(yaml.safe_dump(existing, sort_keys=False))
-        ctx.audit.record("config", "operator", {"event": "settings-update", "changes": before})
+        logging_cfg = dict(existing.get("logging") or {})
+        logging_cfg["log_payloads"] = s.log_payloads
+        existing["logging"] = logging_cfg
+        if updates:  # a body of only {"tf_api_key": ""} is a recognized no-op
+            cfg_path.write_text(yaml.safe_dump(existing, sort_keys=False))
+            ctx.audit.record("config", "operator", {"event": "settings-update", "changes": before})
         return JSONResponse({"ok": True, "applied": sorted(updates), "persisted_to": str(cfg_path)})
 
     @mcp.custom_route("/api/governance", methods=["GET"])

@@ -24,7 +24,7 @@ class {{ fn.model_name }}(BaseModel):
 {%- endfor %}
 
 
-def {{ fn.tool_name }}(ws, *, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}) -> dict[str, Any]:
+def {{ fn.tool_name }}(ws{% if fn.args %}, *, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}{% endif %}) -> dict[str, Any]:
     """{{ fn.description }}
 {% if fn.skipped %}
     Not exposed: {{ fn.skipped | join(", ") }} (non-literal defaults; the package's own defaults apply).

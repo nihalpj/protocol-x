@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { api, useApi, ApiError } from "@/api";
+import { Switch } from "@/components/ui/switch";
 import type { ConsoleConfig } from "@/lib/types";
 
 interface Props {
@@ -11,6 +12,8 @@ function SettingsForm({ config }: { config: ConsoleConfig }) {
   const [endpoint, setEndpoint] = useState(config.models.endpoint.value);
   const [judgeModel, setJudgeModel] = useState(config.models.judge.value);
   const [fastModel, setFastModel] = useState(config.models.fast.value);
+  const [logPayloads, setLogPayloads] = useState(config.log_payloads);
+  const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
@@ -20,7 +23,11 @@ function SettingsForm({ config }: { config: ConsoleConfig }) {
         tf_endpoint: endpoint,
         tf_judge_model: judgeModel,
         tf_fast_model: fastModel,
+        log_payloads: logPayloads,
+        // only send the key when a new one was entered — empty keeps the current key
+        ...(apiKey ? { tf_api_key: apiKey } : {}),
       });
+      setApiKey("");
       toast.success(`settings saved — applied: ${r.applied.join(", ")}`);
     } catch (e) {
       const detail = e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
@@ -53,9 +60,25 @@ function SettingsForm({ config }: { config: ConsoleConfig }) {
               className="mono w-full rounded-md border border-[#e4e4e7] px-2.5 py-1.5 text-[11px] outline-none focus:border-[#5e6ad2]"
             />
           </label>
+          <label className="mt-2 block">
+            <div className="mb-1 text-[10.5px] text-[#71717a]">api key</div>
+            <input
+              type="password"
+              value={apiKey}
+              placeholder={config.api_key_set ? "••••••••••••••••" : ""}
+              onChange={(e) => setApiKey(e.target.value)}
+              autoComplete="new-password"
+              className="mono w-full rounded-md border border-[#e4e4e7] px-2.5 py-1.5 text-[11px] outline-none focus:border-[#5e6ad2]"
+            />
+          </label>
           <div className="mt-1 text-[9.5px] text-[#a1a1aa]">
-            source: {config.models.endpoint.source} — API keys are never stored or displayed; workers are
-            keyless.
+            {config.api_key_set
+              ? "A key is set — enter a new key to replace it. Leave empty to keep the current key."
+              : "no key set — paste a Token Factory key to enable agent features"}
+          </div>
+          <div className="mt-1 text-[9.5px] text-[#a1a1aa]">
+            source: {config.models.endpoint.source} — the key is write-only: never displayed or
+            echoed back by the API; workers stay keyless.
           </div>
         </div>
 
@@ -83,6 +106,22 @@ function SettingsForm({ config }: { config: ConsoleConfig }) {
             {config.agent_features_enabled
               ? "agent features enabled — judge fail-closed on outage, nothing merges without a passing verdict"
               : "degraded mode — add a Token Factory key to enable package conversion"}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">
+            observability
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-md border border-[#e4e4e7] bg-[#fafafa] px-3 py-2">
+            <div>
+              <div className="text-[10.5px] text-[#71717a]">log request/response payloads</div>
+              <div className="text-[9.5px] text-[#a1a1aa]">
+                record tool-call arguments and results in tool-calls.jsonl — secret-scrubbed,
+                capped at 4000 chars per field
+              </div>
+            </div>
+            <Switch checked={logPayloads} onCheckedChange={setLogPayloads} aria-label="Log request/response payloads" />
           </div>
         </div>
 
