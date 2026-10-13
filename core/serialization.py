@@ -23,6 +23,13 @@ def _json_size(value: Any) -> int:
 
 def normalize_result(result: Any, workspace: Workspace) -> dict:
     """Normalize a worker-returned payload (already JSON-decoded) to the wire contract."""
+    if isinstance(result, dict) and "__binary_persisted__" in result:
+        # P10 streaming persistence: the worker already wrote the bytes to the
+        # workspace (cap enforced worker-side) — just pass the resource ref on.
+        resource = result.get("resource")
+        if not isinstance(resource, dict) or "uri" not in resource:
+            raise ToolError(RESULT_TOO_LARGE, "invalid persisted binary payload")
+        return {"persisted": True, "resource": resource}
     if isinstance(result, dict) and "__binary__" in result:
         raw = base64.b64decode(result["data_b64"])
         if len(raw) > HARD_CAP_BYTES:

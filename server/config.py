@@ -132,6 +132,8 @@ class Settings:
         self.cpus_override = env.get("PROTOX_CPUS")
         self.memory_override = env.get("PROTOX_MEMORY")
         self.worker_pool_override = env.get("PROTOX_WORKER_POOL")
+        # P10 warm worker pool; PROTOX_POOL=0 -> strict spawn-per-call
+        self.pool_enabled = env.get("PROTOX_POOL", "1") != "0"
 
     @property
     def db_path(self) -> Path:

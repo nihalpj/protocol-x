@@ -44,14 +44,20 @@ class AppContext:
         self.registry = ToolRegistry(self.store, settings.data_dir)
         self.registry.load()
         self.workspace = Workspace(settings.workspace_root)
-        self.runner = SubprocessRunner()
+        # F-038: compute the host-derived profile once; print + audit-log it.
+        self.sizing: SizingProfile = profile_for_settings(settings)
+        if settings.pool_enabled:
+            from core.sandbox.pool import PooledRunner
+
+            size = int(settings.worker_pool_override or self.sizing.worker_pool)
+            self.runner = PooledRunner(max_workers=max(1, size))
+        else:
+            self.runner = SubprocessRunner()
         self.logger = JsonlLogger(settings.log_jsonl)
         self.metrics = Metrics()
         self.token_store = TokenStore(settings.tokens, settings.tool_acl)
         self.rate_limiter = RateLimiter(settings.rate_limit_per_min)
         self.secrets = SecretsBroker(settings.secrets)
-        # F-038: compute the host-derived profile once; print + audit-log it.
-        self.sizing: SizingProfile = profile_for_settings(settings)
         self._apply_policy_overrides()
         from agents.repair_agent import RepairAgent
 

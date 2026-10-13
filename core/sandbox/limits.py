@@ -25,3 +25,22 @@ def apply_limits(
         with contextlib.suppress(ValueError, OSError):
             resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def apply_pool_limits(rss_mb: int = RSS_MB, fs_mb: int = FS_MB) -> None:
+    """Hard limits for a warm-pool worker (F-038/P10), bucketed by (rss, fs).
+
+    RLIMIT_CPU is deliberately absent: it budgets *cumulative* process CPU,
+    which a long-lived worker would exhaust across calls. CPU abuse in pooled
+    mode is bounded by the parent's wall-clock timeout (SIGKILL) — spawn mode
+    (PROTOX_POOL=0) keeps the strict per-call RLIMIT_CPU.
+    """
+    import resource
+
+    rss = rss_mb * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (rss, rss))
+    fs = fs_mb * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_FSIZE, (fs, fs))
+    with contextlib.suppress(ValueError, OSError):
+        resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

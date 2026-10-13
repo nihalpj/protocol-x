@@ -1,0 +1,7 @@
+{
+  "host_note": "reference numbers; regenerate with PROTOX_WRITE_BASELINE=1",
+  "calls": 15,
+  "pool_p50_ms": 109.38,
+  "spawn_p50_ms": 246.15,
+  "speedup": 2.25
+}
