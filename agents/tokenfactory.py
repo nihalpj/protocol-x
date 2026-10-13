@@ -42,13 +42,15 @@ class TokenFactoryClient:
             headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout_s
         )
 
-    def chat(self, model: str, messages: list[dict], temperature: float = 0.0) -> Completion:
+    def chat(
+        self, model: str, messages: list[dict], temperature: float = 0.0, max_tokens: int = 4096
+    ) -> Completion:
         import hashlib
         import json
 
         payload = {"model": model, "messages": messages, "temperature": temperature}
         prompt_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-        body = {**payload, "max_tokens": 4096}
+        body = {**payload, "max_tokens": max_tokens}
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -57,6 +59,12 @@ class TokenFactoryClient:
                     raise InferenceError(f"endpoint returned {resp.status_code}: {resp.text[:200]}")
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"]
+                if not content:
+                    # Reasoning models can exhaust the token budget on
+                    # reasoning_content and return empty content (finish_reason=
+                    # "length") — retry with backoff rather than poisoning parsers.
+                    finish = data["choices"][0].get("finish_reason")
+                    raise InferenceError(f"empty completion content (finish_reason={finish})")
                 return Completion(content=content, model=data.get("model", model), prompt_hash=prompt_hash)
             except (httpx.HTTPError, KeyError, IndexError, ValueError, InferenceError) as exc:
                 last_exc = exc

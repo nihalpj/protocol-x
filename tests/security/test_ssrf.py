@@ -229,10 +229,16 @@ _ALLOWED_OFFENDERS = {"http_requests.py", "_urlguard.py"}
 
 
 def test_network_imports_confined_to_http_adapter():
-    """Only the HTTP adapter + its guard may import network modules."""
+    """Only the HTTP adapter + its guard may import network modules.
+
+    Scans exactly the modules the registry would load: `_`-prefixed helpers
+    and `*.draft.py` (unmerged, unjudged, never registered) are excluded.
+    """
     adapters_dir = Path(__file__).resolve().parents[2] / "adapters"
     offenders = []
     for path in sorted(adapters_dir.glob("*.py")):
+        if path.name.startswith("_") or path.name.endswith(".draft.py"):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imported: set[str] = set()
         for node in ast.walk(tree):

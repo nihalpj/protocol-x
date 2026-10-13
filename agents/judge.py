@@ -83,6 +83,7 @@ class Judge:
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+                max_tokens=16384,  # reasoning models spend budget on reasoning_content
             )
         except InferenceError as exc:
             raise JudgeUnavailable(str(exc)) from exc
@@ -112,9 +113,19 @@ class Judge:
             text = text.strip("`").removeprefix("json").strip()
         try:
             data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            # Fail closed: an unparseable verdict is never a pass (INV-6)
-            raise JudgeUnavailable(f"judge returned unparseable verdict: {exc}") from exc
+        except json.JSONDecodeError:
+            # Tolerate prose around the JSON object (reasoning models sometimes
+            # leak rationale into content); fail closed if no object is found.
+            start, end = text.find("{"), text.rfind("}")
+            if start == -1 or end <= start:
+                raise JudgeUnavailable(
+                    f"judge returned unparseable verdict: {text[:120]!r}"
+                ) from None
+            try:
+                data = json.loads(text[start : end + 1])
+            except json.JSONDecodeError as exc:
+                # Fail closed: an unparseable verdict is never a pass (INV-6)
+                raise JudgeUnavailable(f"judge returned unparseable verdict: {exc}") from exc
         verdict = data.get("verdict")
         if verdict not in VERDICTS:
             raise JudgeUnavailable(f"judge returned invalid verdict: {verdict!r}")

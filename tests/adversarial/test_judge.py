@@ -117,3 +117,41 @@ def test_judge_unparseable_verdict_fails_closed():
 def test_no_api_key_is_inference_error():
     with pytest.raises(InferenceError):
         TokenFactoryClient("")
+
+
+def test_empty_completion_content_retries_then_fails_closed():
+    """Reasoning models can exhaust max_tokens on reasoning_content and return
+    empty content — the client must treat that as retryable inference failure."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+        )
+
+    client = TokenFactoryClient(
+        "test-key", max_retries=2, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    with pytest.raises(JudgeUnavailable, match="empty completion content"):
+        judge.review(CLEAN_ADAPTER, "demo")
+    assert len(calls) == 2  # retried, not parsed as a verdict
+
+
+def test_judge_verdict_wrapped_in_prose_parses():
+    """Reasoning models sometimes leak rationale around the JSON object."""
+    content = 'Let me think. The adapter is clean.\n{"verdict": "pass", "findings": []}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    client = TokenFactoryClient(
+        "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    verdict = judge.review(CLEAN_ADAPTER, "demo")
+    assert verdict.verdict == "pass"
