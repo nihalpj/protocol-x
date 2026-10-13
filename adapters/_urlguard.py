@@ -198,6 +198,9 @@ def _prepare_headers(
     hdrs["Host"] = target.host if target.port == default_port else f"{target.host}:{target.port}"
     if not any(k.lower() == "accept-encoding" for k in hdrs):
         hdrs["Accept-Encoding"] = "identity"
+    if not any(k.lower() == "user-agent" for k in hdrs):
+        # GitHub and other APIs 403 requests without a User-Agent.
+        hdrs["User-Agent"] = "protocol-x-tool-mcp/1.0"
     hdrs["Connection"] = "close"
     return hdrs
 
