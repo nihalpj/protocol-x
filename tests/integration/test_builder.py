@@ -47,6 +47,41 @@ def test_generated_adapter_passes_static_gate(builder):
     assert static_gate(Path(source_path).read_text()) == []
 
 
+def test_non_literal_defaults_are_skipped(builder):
+    """Regression: repr() of sentinel/instance defaults (<object object at ...>)
+    must never reach generated code — the param is omitted instead (INV-3)."""
+    import json as json_mod
+
+    # json.dumps has defaults like cls=None; craft a worse case via a fake module
+    # would be overkill — assert on the general rule with a stdlib function whose
+    # defaults are all literal, plus direct unit coverage of the helper.
+    from agents.codegen import _literal_default
+
+    assert _literal_default(5.0) == "5.0"
+    assert _literal_default("x") == "'x'"
+    assert _literal_default(None) == "None"
+    assert _literal_default(object()) is None  # '<object object at 0x...>'
+    assert _literal_default(json_mod.JSONEncoder()) is None
+
+    candidates = introspect_package("json")
+    dumps = next(c for c in candidates if c.name == "dumps")
+    for arg in dumps.args:
+        if arg["default"] is not None:
+            import ast
+
+            ast.literal_eval(arg["default"])  # every emitted default must be a literal
+
+
+def test_default_type_inferred_from_literal(builder):
+    """Un-annotated params get their schema type from a literal default (INV-3)."""
+    candidates = introspect_package("json")
+    dumps = next(c for c in candidates if c.name == "dumps")
+    types = {a["name"]: a["type"] for a in dumps.args}
+    # json.dumps(..., skipkeys=False, ensure_ascii=True, indent=None, ...)
+    assert types["skipkeys"] == "bool"
+    assert types["indent"].endswith("| None")
+
+
 def test_regeneration_writes_draft(builder):
     builder.generate("json", ["loads"])
     module_path = builder.ctx.registry.adapters_dir / "json.py"

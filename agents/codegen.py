@@ -10,6 +10,7 @@ package (E-3) + Jinja rendering + static gate + auto-merge.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import py_compile
 import re
@@ -42,6 +43,7 @@ class FunctionCandidate:
     signature: str
     doc: str
     args: list[dict[str, Any]] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)  # params with non-literal defaults
 
 
 def _py_type(annotation: Any) -> str:
@@ -49,6 +51,20 @@ def _py_type(annotation: Any) -> str:
         return "str"
     name = getattr(annotation, "__name__", str(annotation))
     return _TYPE_MAP.get(name, "str")
+
+
+def _literal_default(value: Any) -> str | None:
+    """repr() of a default only if it round-trips as a Python literal.
+
+    Non-literal defaults (sentinel objects, class instances like httpx.Timeout)
+    repr() as '<object object at 0x...>' — emitting that would not compile.
+    """
+    text = repr(value)
+    try:
+        ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError):
+        return None
+    return text
 
 
 def introspect_package(package: str, max_candidates: int = 100) -> list[FunctionCandidate]:
@@ -73,14 +89,30 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
         except (ValueError, TypeError):
             continue
         args = []
+        skipped: list[str] = []
         for pname, param in sig.parameters.items():
             if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
                 continue  # no *args/**kwargs pass-through — fixed wrappers only (INV-1)
+            type_name = _py_type(param.annotation)
+            default_repr: str | None = None
+            if param.default is not inspect.Parameter.empty:
+                default_repr = _literal_default(param.default)
+                if default_repr is None:
+                    # Non-literal default (sentinel/instance) — omitting the
+                    # parameter keeps the schema honest (INV-3); the package's
+                    # own default applies.
+                    skipped.append(pname)
+                    continue
+                if param.annotation is inspect.Parameter.empty and param.default is not None:
+                    # Infer the schema type from the default, not "str" (INV-3).
+                    type_name = _TYPE_MAP.get(type(param.default).__name__, type_name)
+            if default_repr == "None":
+                type_name = f"{type_name} | None"
             args.append(
                 {
                     "name": pname,
-                    "type": _py_type(param.annotation),
-                    "default": None if param.default is inspect.Parameter.empty else repr(param.default),
+                    "type": type_name,
+                    "default": default_repr,
                     "description": f"parameter {pname}",
                 }
             )
@@ -91,6 +123,7 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
                 signature=str(sig),
                 doc=doc[0] if doc else f"{package}.{target}",
                 args=args,
+                skipped=skipped,
             )
         )
         if len(candidates) >= max_candidates:
@@ -196,6 +229,7 @@ class Builder:
                 "target": c.name,
                 "description": c.doc[:200],
                 "args": c.args,
+                "skipped": c.skipped,
             }
             for c in chosen
         ]

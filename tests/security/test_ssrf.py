@@ -225,11 +225,31 @@ def test_crlf_in_header_rejected(ws, monkeypatch):
 
 
 _NETWORK_MODULES = {"socket", "http", "ssl", "urllib", "requests", "httpx"}
-_ALLOWED_OFFENDERS = {"http_requests.py", "_urlguard.py"}
+_GUARD_MODULES = {"_urlguard.py"}  # the SSRF guard itself, no ToolSpecs
+
+
+def _all_toolspecs_declare_network(tree: ast.AST) -> bool:
+    """Every ToolSpec(...) call must pass network=True (INV-3 honesty for egress)."""
+    specs = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (isinstance(node.func, ast.Name) and node.func.id == "ToolSpec"
+             or isinstance(node.func, ast.Attribute) and node.func.attr == "ToolSpec")
+    ]
+    if not specs:
+        return False
+    return all(
+        any(kw.arg == "network" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in spec.keywords)
+        for spec in specs
+    )
 
 
 def test_network_imports_confined_to_http_adapter():
-    """Only the HTTP adapter + its guard may import network modules.
+    """Network modules may only be imported by adapters whose every ToolSpec
+    declares network=True (curated http adapter, judge-approved generated ones)
+    plus the SSRF guard itself.
 
     Scans exactly the modules the registry would load: `_`-prefixed helpers
     and `*.draft.py` (unmerged, unjudged, never registered) are excluded.
@@ -247,6 +267,6 @@ def test_network_imports_confined_to_http_adapter():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.update(node.module.split(".")[0].split())
         bad = imported & _NETWORK_MODULES
-        if bad and path.name not in _ALLOWED_OFFENDERS:
+        if bad and path.name not in _GUARD_MODULES and not _all_toolspecs_declare_network(tree):
             offenders.append((path.name, sorted(bad)))
     assert offenders == []

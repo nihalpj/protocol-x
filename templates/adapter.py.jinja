@@ -25,7 +25,9 @@ class {{ fn.model_name }}(BaseModel):
 
 def {{ fn.tool_name }}(ws, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}) -> dict[str, Any]:
     """{{ fn.description }}
-
+{% if fn.skipped %}
+    Not exposed: {{ fn.skipped | join(", ") }} (non-literal defaults; the package's own defaults apply).
+{% endif %}
     Limits: timeout {{ timeout_s }}s, sandboxed worker{% if network %}, network enabled{% endif %}.
     """
     try:
