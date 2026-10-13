@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
+from fastmcp.exceptions import ToolError
 
 
 def _transport(tmp_env) -> PythonStdioTransport:
@@ -69,7 +70,7 @@ async def test_stdio_call_unknown_tool(tmp_env):
     transport = _transport(tmp_env)
     async with Client(transport) as client:
 
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError, match="Unknown tool"):
             await client.call_tool("no_such_tool", {})
 
 
@@ -138,5 +139,6 @@ def test_lazy_load_with_200_stub_adapters(tmp_path, tmp_env):
     warm_s = time.monotonic() - start
     assert len(warm_list) == 200
     assert cold_s <= 2.0, f"cold catalog assembly took {cold_s:.2f}s"
-    assert warm_s <= 0.5, f"warm catalog load took {warm_s:.2f}s"  # cache path (tools/list ≤100ms server-side)
+    # cache path (tools/list ≤100ms server-side)
+    assert warm_s <= 0.5, f"warm catalog load took {warm_s:.2f}s"
     store.close()
