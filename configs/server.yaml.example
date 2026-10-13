@@ -28,6 +28,6 @@ sandbox:
 
 models:                       # Nebius Token Factory (agent inference only; INV-8)
   endpoint: https://api.tokenfactory.nebius.com/v1
-  judge: nvidia/nemotron-3-ultra
-  fast: nvidia/nemotron-3-nano
-  escalation: nvidia/nemotron-3-ultra
+  judge: nvidia/Nemotron-3-Ultra-550b-a55b
+  fast: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
+  escalation: nvidia/Nemotron-3-Ultra-550b-a55b

@@ -90,8 +90,8 @@ RUBRIC_VERSION = "inv-rubric v1.2"
 
 # Nebius × NVIDIA Hackathon: all agent inference via Nebius Token Factory (PRD v1.6).
 TOKEN_FACTORY_URL = "https://api.tokenfactory.nebius.com/v1"
-JUDGE_MODEL = "nvidia/nemotron-3-ultra"   # AI-judge + codegen/repair tier
-FAST_MODEL = "nvidia/nemotron-3-nano"     # converter / repair fast loops
+JUDGE_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"   # AI-judge + codegen/repair tier
+FAST_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"  # converter / repair fast loops
 
 _SIMPLE_ANNOTATIONS = {str: "str", int: "int", float: "float", bool: "bool"}
 _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}

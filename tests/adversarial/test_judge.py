@@ -28,7 +28,7 @@ def _judge_with_response(verdict_doc: dict) -> Judge:
     client = TokenFactoryClient(
         "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
-    return Judge(client, "nvidia/nemotron-3-ultra")
+    return Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
 
 
 CLEAN_ADAPTER = '''
@@ -97,7 +97,7 @@ def test_judge_outage_fails_closed():
     client = TokenFactoryClient(
         "test-key", max_retries=1, http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
-    judge = Judge(client, "nvidia/nemotron-3-ultra")
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
     with pytest.raises(JudgeUnavailable):
         judge.review(CLEAN_ADAPTER, "demo")
 
@@ -109,7 +109,7 @@ def test_judge_unparseable_verdict_fails_closed():
     client = TokenFactoryClient(
         "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
-    judge = Judge(client, "nvidia/nemotron-3-ultra")
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
     with pytest.raises(JudgeUnavailable):
         judge.review(CLEAN_ADAPTER, "demo")
 

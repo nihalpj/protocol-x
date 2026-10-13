@@ -80,11 +80,11 @@ def run_setup(env: dict[str, str] | None = None) -> int:
         "Nebius Token Factory API key (blank = degraded mode, agent features off)",
         cur_models.get("api_key") or "")
     if tf_key:
-        judge = _ask("judge model", cur_models.get("judge") or "nvidia/nemotron-3-ultra")
-        fast = _ask("fast model", cur_models.get("fast") or "nvidia/nemotron-3-nano")
+        judge = _ask("judge model", cur_models.get("judge") or "nvidia/Nemotron-3-Ultra-550b-a55b")
+        fast = _ask("fast model", cur_models.get("fast") or "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B")
     else:
-        judge = cur_models.get("judge") or "nvidia/nemotron-3-ultra"
-        fast = cur_models.get("fast") or "nvidia/nemotron-3-nano"
+        judge = cur_models.get("judge") or "nvidia/Nemotron-3-Ultra-550b-a55b"
+        fast = cur_models.get("fast") or "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
 
     tokens = list(cur_sec.get("tokens") or [])
     if tokens:

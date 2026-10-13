@@ -117,15 +117,19 @@ class Settings:
             or "https://api.tokenfactory.nebius.com/v1"
         )
         self.tf_judge_model = (
-            env.get("PROTOX_TF_JUDGE_MODEL") or models.get("judge") or "nvidia/nemotron-3-ultra"
+            env.get("PROTOX_TF_JUDGE_MODEL")
+            or models.get("judge")
+            or "nvidia/Nemotron-3-Ultra-550b-a55b"
         )
         self.tf_fast_model = (
-            env.get("PROTOX_TF_FAST_MODEL") or models.get("fast") or "nvidia/nemotron-3-nano"
+            env.get("PROTOX_TF_FAST_MODEL")
+            or models.get("fast")
+            or "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
         )
         self.tf_escalation_model = (
             env.get("PROTOX_TF_ESCALATION_MODEL")
             or models.get("escalation")
-            or "nvidia/nemotron-3-ultra"
+            or "nvidia/Nemotron-3-Ultra-550b-a55b"
         )
 
         # F-038 env overrides (computed profile lives in core/sizing.py)

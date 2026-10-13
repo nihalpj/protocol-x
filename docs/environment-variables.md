@@ -19,9 +19,9 @@ Config-file auto-discovery: with no `--config` flag and no `PROTOX_CONFIG`, `Set
 | `PROTOX_POLICY_PRESET` | `network-egress` | Named sandbox preset from `policies/*.yaml`: `strict` (network off, tightest limits, HTTP adapter disabled) · `network-egress` (HTTP adapter on, standard limits) · `permissive-dev` (relaxed limits, local development only). Unknown names or invalid YAML/keys fail startup loudly (exit 2). |
 | `PROTOX_TF_API_KEY` | — (empty) | Nebius Token Factory API key for all agent inference (AI-judge, converter, repair). Empty = degraded mode (E-20): core tools fully live; agent features fail closed. |
 | `PROTOX_TF_ENDPOINT` | `https://api.tokenfactory.nebius.com/v1` | OpenAI-compatible chat-completions endpoint for the Token Factory client. |
-| `PROTOX_TF_JUDGE_MODEL` | `nvidia/nemotron-3-ultra` | Model for AI-judge reviews (and codegen/repair escalation tier). |
-| `PROTOX_TF_FAST_MODEL` | `nvidia/nemotron-3-nano` | Model for converter/repair fast loops (proposal fallback, repair directives, patch generation). |
-| `PROTOX_TF_ESCALATION_MODEL` | `nvidia/nemotron-3-ultra` | Escalation model, parsed into `Settings` and configurable here/config (`models.escalation`). Currently reserved — no call site references it yet. |
+| `PROTOX_TF_JUDGE_MODEL` | `nvidia/Nemotron-3-Ultra-550b-a55b` | Model for AI-judge reviews (and codegen/repair escalation tier). |
+| `PROTOX_TF_FAST_MODEL` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | Model for converter/repair fast loops (proposal fallback, repair directives, patch generation). |
+| `PROTOX_TF_ESCALATION_MODEL` | `nvidia/Nemotron-3-Ultra-550b-a55b` | Escalation model, parsed into `Settings` and configurable here/config (`models.escalation`). Currently reserved — no call site references it yet. |
 | `PROTOX_CPUS` | computed (F-038) | Override for the computed container CPU budget (`max(1, cores − 1)`, reserving 2 when cores > 8). Reported by `doctor` and `/api/status` as an override. |
 | `PROTOX_MEMORY` | computed (F-038) | Override for the computed memory budget (60% of RAM). Accepts `4096`, `4096m`, or `4g`. |
 | `PROTOX_WORKER_POOL` | computed (F-038) | Override for the warm worker-pool size (`min(cores, RAM ÷ (2 × per-call RSS))`, floor 2). |
