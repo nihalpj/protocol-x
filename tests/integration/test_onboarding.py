@@ -79,8 +79,15 @@ def test_doctor_full_checks(settings):
     assert checks["token-factory"].status == "yellow"  # no key -> degraded
 
 
-def test_doctor_exit_codes(settings):
+def test_doctor_exit_codes(settings, monkeypatch):
+    import socket
+
     from server.doctor import run_doctor
+
+    with socket.socket() as sock:  # don't assume 7894 is free on the dev host
+        sock.bind(("127.0.0.1", 0))
+        free_port = sock.getsockname()[1]
+    monkeypatch.setattr(settings, "port", free_port)
 
     assert run_doctor(quick=True, settings=settings) == 0
     assert run_doctor(quick=False, settings=settings) == 0  # yellows don't fail

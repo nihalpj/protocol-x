@@ -233,6 +233,44 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
             }
         )
 
+    @mcp.custom_route("/api/builder/install", methods=["POST"])
+    async def api_builder_install(req: Request) -> JSONResponse:
+        """Install a PyPI package into the server environment (E-3 resolution)."""
+        import asyncio
+
+        from server.installer import InstallError, install_package
+
+        try:
+            body = await req.json()
+        except Exception:
+            return JSONResponse({"state": "error", "message": "invalid JSON body"}, status_code=400)
+        package = str(body.get("package", ""))
+        try:
+            result = await asyncio.to_thread(install_package, package)
+        except InstallError as exc:
+            return JSONResponse(
+                {"state": "failed", "message": str(exc), "detail": exc.detail},
+                status_code=400,
+            )
+        ctx.audit.record(
+            "install",
+            "operator",
+            {
+                "package": result.name,
+                "version": result.version,
+                "command": result.command,
+                "already_installed": result.already_installed,
+            },
+        )
+        return JSONResponse(
+            {
+                "state": "installed",
+                "package": result.name,
+                "version": result.version,
+                "already_installed": result.already_installed,
+            }
+        )
+
     @mcp.custom_route("/api/builder/generate", methods=["POST"])
     async def api_generate(req: Request) -> JSONResponse:
         from agents.codegen import Builder, IntrospectionError

@@ -15,6 +15,7 @@ type Phase = "idle" | "searching" | "ok" | "not-found" | "offline";
 type Action =
   | { kind: "idle" }
   | { kind: "busy"; label: string }
+  | { kind: "not-installed"; package: string; message: string; resume: "generate" | "convert" }
   | { kind: "choose"; functions: IntrospectFunction[] }
   | { kind: "generated"; module: string; path: string; tools: string[] }
   | { kind: "judged"; state: string; tools: string[]; diagnostics: string[]; verdict: JudgeVerdictInfo | null }
@@ -58,7 +59,7 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
     });
     if (!intro) return;
     if (intro.state !== "ok") {
-      setAction({ kind: "failed", title: "package not installed on the server", lines: [intro.message] });
+      setAction({ kind: "not-installed", package: pkg.name, message: intro.message, resume: "generate" });
       return;
     }
     setSelected(new Set(intro.functions.map((f) => f.name)));
@@ -103,7 +104,7 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
     });
     if (!intro) return;
     if (intro.state !== "ok") {
-      setAction({ kind: "failed", title: "package not installed on the server", lines: [intro.message] });
+      setAction({ kind: "not-installed", package: pkg.name, message: intro.message, resume: "convert" });
       return;
     }
     setAction({ kind: "busy", label: `generating adapter for ${intro.functions.length} function(s)…` });
@@ -117,6 +118,19 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
     } catch (e) {
       fail("conversion failed", e);
     }
+  };
+
+  const onInstall = async (packageName: string, resume: "generate" | "convert") => {
+    setAction({ kind: "busy", label: `installing ${packageName} on the server (uv pip install)…` });
+    const r = await api.installPackage(packageName);
+    if (r.state !== "installed") {
+      setAction({ kind: "failed", title: `could not install ${packageName}`, lines: [r.message] });
+      return;
+    }
+    toast.success(`${r.package} ${r.version} installed on the server`);
+    // resume the flow the operator originally chose
+    if (resume === "convert") await onConvert();
+    else await onGenerate();
   };
 
   const busy = action.kind === "busy";
@@ -253,6 +267,25 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
                   </div>
                 )}
 
+                {action.kind === "not-installed" && (
+                  <div className="space-y-2 rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#b45309]">
+                      package not installed on the server
+                    </div>
+                    <div className="text-[10.5px] text-[#52525b]">{action.message}</div>
+                    <button
+                      onClick={() => void onInstall(action.package, action.resume)}
+                      className="rounded-md bg-[#b45309] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[#92400e]"
+                    >
+                      install {action.package} on the server →
+                    </button>
+                    <div className="text-[10px] text-[#71717a]">
+                      runs <span className="mono">uv pip install {action.package}</span> in the server
+                      environment and is written to the audit log.
+                    </div>
+                  </div>
+                )}
+
                 {action.kind === "choose" && (
                   <div className="space-y-2 rounded-lg border border-[#e4e4e7] px-3 py-2.5">
                     <div className="text-[11px] font-semibold text-[#3f3f46]">
@@ -357,8 +390,8 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
             {phase === "idle" && (
               <div className="text-[10.5px] leading-relaxed text-[#71717a]">
                 The converter introspects the installed package and never guesses from the index — the PyPI
-                lookup here only confirms the package exists and shows its metadata. The package must be
-                installed in the server environment.
+                lookup here only confirms the package exists and shows its metadata. If the package is missing
+                from the server environment, the console offers to install it for you.
               </div>
             )}
           </div>

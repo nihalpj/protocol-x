@@ -171,6 +171,10 @@ export type IntrospectResult =
   | { state: "ok"; package: string; functions: IntrospectFunction[] }
   | { state: "not-installed"; message: string };
 
+export type InstallResult =
+  | { state: "installed"; package: string; version: string; already_installed: boolean }
+  | { state: "failed"; message: string };
+
 export interface GenerateResult {
   state: string; // generated | generation-failed
   module?: string;
@@ -298,6 +302,19 @@ export const api = {
         };
       }
       throw e;
+    }
+  },
+  installPackage: async (pkg: string): Promise<InstallResult> => {
+    try {
+      return await request<{ state: "installed"; package: string; version: string; already_installed: boolean }>(
+        "/api/builder/install",
+        { method: "POST", body: JSON.stringify({ package: pkg }) }
+      );
+    } catch (e) {
+      if (e instanceof ApiError) {
+        return { state: "failed", message: messageOf(e.body, e.message) };
+      }
+      return { state: "failed", message: e instanceof Error ? e.message : String(e) };
     }
   },
   generateAdapter: (pkg: string, functions: string[]) =>

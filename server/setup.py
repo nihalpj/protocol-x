@@ -25,7 +25,13 @@ PRESETS = ("network-egress", "strict", "permissive-dev")
 
 def _ask(prompt: str, default: str) -> str:
     answer = input(f"{prompt} [{default}]: ").strip()
-    return answer or default
+    if not answer:
+        return default
+    # "yes" answers "accept the default" — users often mean confirmation, not
+    # a literal value, and a literal "yes" breaks paths/model names.
+    if default and answer.lower() in ("y", "yes"):
+        return default
+    return answer
 
 
 def _ask_choice(prompt: str, choices: tuple[str, ...], default: str) -> str:

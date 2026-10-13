@@ -58,7 +58,9 @@ async def test_stdio_boot_and_catalog(tmp_env):
         tools = await client.list_tools()
         boot_s = time.monotonic() - start
     names = sorted(t.name for t in tools)
-    assert names == LAUNCH_CORE  # 34-tool launch core (P1+P2)
+    # generated adapters (converter output) extend the catalog at runtime —
+    # assert the launch core is present, not that the catalog is frozen
+    assert set(LAUNCH_CORE) <= set(names)
     assert boot_s <= 5.0  # generous CI bound; AC-F001-01 target is 2 s warm
     from jsonschema.validators import validator_for
 
@@ -86,7 +88,7 @@ async def test_health_endpoint(ctx):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["tools"] == 34  # launch core after P2
+    assert body["tools"] >= 34  # launch core + any converter-generated tools
 
 
 def test_image_resize_benchmark(ctx, sample_png):
