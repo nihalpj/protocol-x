@@ -135,8 +135,13 @@ export interface RepairIncident {
   window_start_ts: number;
 }
 
+export interface DraftTool {
+  name: string;
+  module: string;
+}
+
 export interface Governance {
-  drafts: string[];
+  drafts: DraftTool[];
   quarantined: string[];
   verdicts: AuditEvent[];
   rejections: AuditEvent[];

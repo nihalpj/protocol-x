@@ -1,4 +1,7 @@
+import { useState } from "react";
+import { toast } from "sonner";
 import { api, useApi } from "@/api";
+import type { DraftTool } from "@/api";
 import { cn, fmtDateTime, fmtTs, payloadOf } from "@/lib/format";
 import type { AuditEvent } from "@/lib/types";
 
@@ -69,9 +72,65 @@ function Empty({ text }: { text: string }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-col rounded-xl border border-[#e4e4e7] bg-[#fafafa] p-3">
-      <div className="mb-2 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">{title}</div>
-      <div className="min-h-0 flex-1">{children}</div>
+    <div className="flex max-h-72 min-w-0 flex-col rounded-xl border border-[#e4e4e7] bg-[#fafafa] p-3">
+      <div className="mb-2 shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">{title}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1 scroll-thin">{children}</div>
+    </div>
+  );
+}
+
+/** Draft tools grouped by adapter module, with a button to run the AI judge
+ *  and complete the pipeline (judge → auto-merge on pass). */
+function DraftList({ drafts, agentEnabled }: { drafts: DraftTool[]; agentEnabled: boolean }) {
+  const [judging, setJudging] = useState<string | null>(null);
+  if (drafts.length === 0) return <Empty text="no draft tools" />;
+
+  const byModule = new Map<string, string[]>();
+  for (const d of drafts) {
+    const list = byModule.get(d.module) ?? [];
+    list.push(d.name);
+    byModule.set(d.module, list);
+  }
+
+  const onJudge = async (module: string) => {
+    setJudging(module);
+    try {
+      const r = await api.judgeAdapter(module);
+      if (r.state === "merged") toast.success(`${module}: ${r.tools.length} tool(s) judged, merged and live`);
+      else if (r.state === "blocked") toast.error(`${module}: judge blocked the adapter`);
+      else toast.warning(`${module}: judge ${r.state}`);
+    } catch (e) {
+      toast.error(`${module}: judge failed — ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setJudging(null);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {[...byModule.entries()].map(([module, tools]) => (
+        <div key={module} className="rounded-md border border-[#fde68a] bg-[#fffbeb]/60 px-2.5 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="mono text-[10px] font-semibold text-[#b45309]">{module}</span>
+            <span className="mono text-[9px] text-[#a1a1aa]">
+              {tools.length} draft tool{tools.length === 1 ? "" : "s"}
+            </span>
+            <button
+              disabled={!agentEnabled || judging !== null}
+              onClick={() => void onJudge(module)}
+              title={
+                agentEnabled
+                  ? "run the AI judge on this draft adapter and merge it if it passes"
+                  : "requires a Token Factory key (degraded mode)"
+              }
+              className="ml-auto shrink-0 rounded-md bg-[#15803d] px-2 py-0.5 text-[9.5px] font-medium text-white hover:bg-[#166534] disabled:opacity-40"
+            >
+              {judging === module ? "judging…" : "judge & merge →"}
+            </button>
+          </div>
+          <div className="mono mt-1 text-[9.5px] leading-relaxed text-[#71717a]">{tools.join(", ")}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -100,17 +159,7 @@ export function Governance() {
         {gov && (
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             <Card title={`drafts (${gov.drafts.length})`}>
-              {gov.drafts.length === 0 ? (
-                <Empty text="no draft tools" />
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {gov.drafts.map((n) => (
-                    <span key={n} className="mono rounded border border-[#fde68a] bg-[#fffbeb] px-1.5 py-0.5 text-[10px] text-[#b45309]">
-                      {n}
-                    </span>
-                  ))}
-                </div>
-              )}
+              <DraftList drafts={gov.drafts} agentEnabled={gov.agent_features_enabled} />
             </Card>
 
             <Card title={`quarantined (${gov.quarantined.length})`}>

@@ -170,7 +170,11 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         incidents = ctx.store.incidents.list(limit=50)
         return JSONResponse(
             {
-                "drafts": [e.name for e in tools if e.state == "draft"],
+                "drafts": [
+                    {"name": e.name, "module": e.adapter_module}
+                    for e in tools
+                    if e.state == "draft"
+                ],
                 "quarantined": [e.name for e in tools if e.state == "quarantined"],
                 "verdicts": verdicts,
                 "rejections": rejections,
