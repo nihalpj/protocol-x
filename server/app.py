@@ -5,6 +5,7 @@ stdio + Streamable HTTP wiring, health/metrics routes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -52,6 +53,9 @@ class AppContext:
         # F-038: compute the host-derived profile once; print + audit-log it.
         self.sizing: SizingProfile = profile_for_settings(settings)
         self._apply_policy_overrides()
+        from agents.repair_agent import RepairAgent
+
+        self.repairer = RepairAgent(self)  # F-030 runtime self-repair
         self.audit.record(
             "config",
             "server",
@@ -122,6 +126,9 @@ class AppContext:
                 call_id, tool_name, duration, "error", exit_code=1, error_code=exc.code
             )
             self.metrics.observe(tool_name, duration, exc.code)
+            with contextlib.suppress(Exception):
+                # repair capture must never break dispatch
+                self.repairer.maybe_capture(tool_name, exc, args)  # F-030
             raise
 
 

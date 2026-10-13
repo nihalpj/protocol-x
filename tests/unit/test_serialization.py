@@ -6,11 +6,10 @@ import base64
 
 import pytest
 
-from adapters.base import RESULT_TOO_LARGE, ToolError
+from adapters.base import RESULT_TOO_LARGE, BinaryResult, ToolError
 from core import serialization
 from core.serialization import binary_to_wire, normalize_result
 from core.workspace import Workspace
-from adapters.base import BinaryResult
 
 
 def test_json_inline(tmp_path):

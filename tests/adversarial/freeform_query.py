@@ -1,5 +1,6 @@
 """Known-VIOLATING adapter — free-form query string reaching pandas.query."""
 from pydantic import BaseModel, ConfigDict
+
 from adapters.base import ToolSpec
 
 

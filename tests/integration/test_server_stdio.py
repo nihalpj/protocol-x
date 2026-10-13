@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 import pytest
-
 from fastmcp import Client
 from fastmcp.client.transports import PythonStdioTransport
 
@@ -70,7 +68,6 @@ async def test_stdio_boot_and_catalog(tmp_env):
 async def test_stdio_call_unknown_tool(tmp_env):
     transport = _transport(tmp_env)
     async with Client(transport) as client:
-        from fastmcp.exceptions import ToolError as ClientToolError
 
         with pytest.raises(Exception):
             await client.call_tool("no_such_tool", {})
@@ -121,9 +118,9 @@ def test_lazy_load_with_200_stub_adapters(tmp_path, tmp_env):
     for i in range(200):
         (adapters_dir / f"stub_{i:03d}.py").write_text(stub.replace("{i}", str(i)))
 
+    from core.db import Store
     from server.config import Settings
     from server.registry import ToolRegistry
-    from core.db import Store
 
     settings = Settings()
     store = Store(settings.db_path)

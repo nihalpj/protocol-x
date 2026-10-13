@@ -6,7 +6,6 @@ console and server never disagree across restarts.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import httpx
@@ -137,6 +136,21 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                 "agent_features_enabled": ctx.settings.agent_features_enabled,
             }
         )
+
+    @mcp.custom_route("/api/repair/incidents", methods=["GET"])
+    async def api_repair_incidents(req: Request) -> JSONResponse:
+        tool = req.query_params.get("tool") or None
+        state = req.query_params.get("state") or None
+        return JSONResponse(
+            {"incidents": ctx.store.incidents.list(tool=tool, state=state)})
+
+    @mcp.custom_route("/api/repair/reenable", methods=["POST"])
+    async def api_repair_reenable(req: Request) -> JSONResponse:
+        body = await req.json()
+        tool = body.get("tool")
+        if not tool or ctx.registry.entry_state(tool) is None:
+            return JSONResponse({"error": f"unknown tool: {tool}"}, status_code=404)
+        return JSONResponse(ctx.repairer.reenable(tool))
 
     @mcp.custom_route("/api/pypi/{name}", methods=["GET"])
     async def api_pypi(req: Request) -> JSONResponse:

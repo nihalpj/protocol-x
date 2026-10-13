@@ -15,7 +15,7 @@ import json
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from adapters.base import RATE_LIMITED, TOOL_NOT_PERMITTED, ToolError
+from adapters.base import TOOL_NOT_PERMITTED, ToolError
 
 # The bearer token for the in-flight request (None = stdio / tokenless).
 current_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(

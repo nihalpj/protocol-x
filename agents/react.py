@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 FIRST_LABEL = {"step": "THOUGHT", "fix": "AUTO-FIX"}
 

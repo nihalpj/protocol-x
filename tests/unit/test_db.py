@@ -13,13 +13,46 @@ from core.db import Store
 
 
 def test_migration_idempotent(tmp_path):
+    from core.db import _MIGRATIONS_DIR
+
+    expected = sorted(p.stem for p in _MIGRATIONS_DIR.glob("m*.sql"))
     db = tmp_path / "protox.db"
     store = Store(db)
     store.close()
     store2 = Store(db)  # re-run must be a no-op
     rows = store2.conn.execute("SELECT version FROM schema_migrations").fetchall()
-    assert [r[0] for r in rows] == ["m001_initial"]
+    assert sorted(r[0] for r in rows) == expected
     store2.close()
+
+
+def test_m002_upgrade_preserves_incidents(tmp_path):
+    """A pre-m002 database upgrades in place: rows survive the table rebuild
+    and the new 'healed' state becomes writable."""
+    from core.db import _MIGRATIONS_DIR, connect
+
+    db = tmp_path / "protox.db"
+    conn = connect(db)
+    conn.executescript((_MIGRATIONS_DIR / "m001_initial.sql").read_text())
+    conn.execute(
+        "INSERT INTO schema_migrations(version, applied_ts) VALUES ('m001_initial', 1.0)"
+    )
+    conn.execute(
+        "INSERT INTO tools(name, state, adapter_module, created_ts, updated_ts) "
+        "VALUES ('t1', 'live', 'm1', 1.0, 1.0)"
+    )
+    conn.execute(
+        "INSERT INTO repair_incidents(tool, error_class, state, window_start_ts) "
+        "VALUES ('t1', 'ADAPTER_ERROR', 'rolled-back', 1.0)"
+    )
+    conn.close()
+
+    store = Store(db)  # applies m002
+    rows = store.incidents.list()
+    assert len(rows) == 1 and rows[0]["state"] == "rolled-back"
+    iid = store.incidents.add("t1", "ADAPTER_ERROR")
+    store.incidents.set_state(iid, "healed", 1)
+    assert store.incidents.get(iid)["state"] == "healed"
+    store.close()
 
 
 def test_dao_round_trips(tmp_path):

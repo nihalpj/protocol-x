@@ -22,7 +22,8 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
+    conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None,
+                           check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -304,11 +305,17 @@ class IncidentRepo:
         ).fetchone()
         return int(row[0])
 
-    def count_failed_repairs(self, tool: str, window_s: float = 86400.0) -> int:
-        """Circuit-breaker count: failed repairs (rolled-back) in the window."""
+    def count_failed_repairs(
+        self, tool: str, window_s: float = 86400.0, since_ts: float | None = None
+    ) -> int:
+        """Circuit-breaker count: failed repairs (rolled-back) in the window.
+        `since_ts` (console re-enable) raises the floor of the window."""
+        threshold = _now() - window_s
+        if since_ts is not None:
+            threshold = max(threshold, since_ts)
         row = self.conn.execute(
             "SELECT COUNT(*) FROM repair_incidents WHERE tool=? AND state='rolled-back' AND window_start_ts > ?",
-            (tool, _now() - window_s),
+            (tool, threshold),
         ).fetchone()
         return int(row[0])
 

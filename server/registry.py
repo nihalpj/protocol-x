@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import json
 import logging
 import sys
@@ -139,8 +140,6 @@ class ToolRegistry:
             if force and dotted in sys.modules:
                 mod = importlib.reload(sys.modules[dotted])
             else:
-                import importlib.util
-
                 spec = importlib.util.spec_from_file_location(dotted, path)
                 if spec is None or spec.loader is None:
                     raise ImportError(f"cannot load adapter {path}")
@@ -187,6 +186,9 @@ class ToolRegistry:
         self.store.tools.set_state(name, state)
         if name in self.catalog:
             self.catalog[name].state = state
+        if state == "quarantined":
+            # a cached lazy-loaded spec must not stay dispatchable (INV-6)
+            self._specs.pop(name, None)
 
     # -- catalog cache ------------------------------------------------------
 

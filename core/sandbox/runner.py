@@ -17,7 +17,7 @@ from typing import Any
 
 from adapters.base import SANDBOX_CRASH, SANDBOX_TIMEOUT, ToolError
 from core.sandbox.backends.python_worker import BACKEND as PYTHON_BACKEND
-from core.sandbox.limits import FS_MB, RSS_MB, CPU_S, apply_limits
+from core.sandbox.limits import CPU_S, FS_MB, RSS_MB, apply_limits
 
 _BACKENDS = {"python": PYTHON_BACKEND}
 

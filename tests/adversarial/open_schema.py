@@ -1,5 +1,6 @@
 """Known-VIOLATING adapter — input model without extra="forbid"."""
 from pydantic import BaseModel
+
 from adapters.base import ToolSpec
 
 

@@ -142,8 +142,9 @@ async def test_metrics_endpoint(auth_ctx, sample_png):
 
 async def test_catalog_parity_stdio_http(auth_ctx, tmp_env):
     """AC-P3-04: stdio and HTTP serve the identical catalog."""
-    import core
     from pathlib import Path
+
+    import core
 
     root = Path(core.__file__).resolve().parent.parent
     stdio_transport = PythonStdioTransport(

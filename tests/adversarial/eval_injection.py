@@ -1,5 +1,6 @@
 """Known-VIOLATING adapter — eval injection. Must score blocked (AC-P6-02)."""
 from pydantic import BaseModel, ConfigDict
+
 from adapters.base import ToolSpec
 
 

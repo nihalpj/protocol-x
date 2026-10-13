@@ -15,7 +15,7 @@ import importlib
 import json
 import sys
 
-from adapters.base import ADAPTER_ATTRS, ADAPTER_ERROR, BinaryResult, ToolError, UNKNOWN_TOOL
+from adapters.base import ADAPTER_ATTRS, ADAPTER_ERROR, UNKNOWN_TOOL, BinaryResult, ToolError
 from core.serialization import binary_to_wire
 from core.workspace import Workspace
 

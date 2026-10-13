@@ -9,7 +9,6 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
 
 from server.config import Settings
 

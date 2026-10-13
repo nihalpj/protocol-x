@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from adapters.base import SSRF_BLOCKED, ToolError
-from core.secrets import SecretsBroker, contains_secret, no_secret_columns_guard
+from core.secrets import contains_secret, no_secret_columns_guard
 from server.config import ConfigError, Settings
 
 
@@ -67,9 +67,9 @@ def test_worker_env_contains_no_secrets(tmp_env, monkeypatch):
 def test_secret_injection_and_no_leak(tmp_env, monkeypatch):
     """AC-F033-02: declared param injected per call; value in no log/audit."""
     monkeypatch.setenv("PROTOX_SECRETS", '{"MY_API_KEY": "s3cr3t-value-123"}')
-    from adapters.base import ToolSpec
     from pydantic import BaseModel, ConfigDict
 
+    from adapters.base import ToolSpec
     from server.app import AppContext
 
     ctx = AppContext(Settings())

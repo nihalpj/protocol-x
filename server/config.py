@@ -80,7 +80,7 @@ class Settings:
 
         # --- sandbox limits: preset defaults, env/file overrides ---
         sbx = file_cfg.get("sandbox") or {}
-        limits_file = dict((sbx.get("limits") or {}))
+        limits_file = dict(sbx.get("limits") or {})
         self.preset_name = (
             env.get("PROTOX_POLICY_PRESET") or sec.get("policy_preset") or "network-egress"
         )

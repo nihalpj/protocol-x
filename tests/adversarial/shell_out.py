@@ -1,6 +1,8 @@
 """Known-VIOLATING adapter — os.system shell-out."""
 import os
+
 from pydantic import BaseModel, ConfigDict
+
 from adapters.base import ToolSpec
 
 
