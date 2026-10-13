@@ -107,9 +107,14 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
                     # own default applies.
                     skipped.append(pname)
                     continue
-                if param.annotation is inspect.Parameter.empty and param.default is not None:
+                default_type = _TYPE_MAP.get(type(param.default).__name__)
+                annotation_mapped = (
+                    param.annotation is not inspect.Parameter.empty
+                    and getattr(param.annotation, "__name__", str(param.annotation)) in _TYPE_MAP
+                )
+                if default_type and not annotation_mapped and param.default is not None:
                     # Infer the schema type from the default, not "str" (INV-3).
-                    type_name = _TYPE_MAP.get(type(param.default).__name__, type_name)
+                    type_name = default_type
             if default_repr == "None":
                 type_name = f"{type_name} | None"
             args.append(
@@ -117,6 +122,7 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
                     "name": pname,
                     "type": type_name,
                     "default": default_repr,
+                    "positional_only": param.kind is inspect.Parameter.POSITIONAL_ONLY,
                     "description": f"parameter {pname}",
                 }
             )
@@ -291,7 +297,9 @@ class Builder:
         from agents.tokenfactory import TokenFactoryClient
 
         client = TokenFactoryClient(
-            self.ctx.settings.tf_api_key, self.ctx.settings.tf_endpoint
+            self.ctx.settings.tf_api_key,
+            self.ctx.settings.tf_endpoint,
+            timeout_s=self.ctx.settings.tf_timeout_s,
         )
         judge = Judge(client, self.ctx.settings.tf_judge_model)
         try:

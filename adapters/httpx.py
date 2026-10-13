@@ -17,21 +17,21 @@ class HttpxCreateSslContextIn(BaseModel):
     """Input schema for httpx_create_ssl_context."""
 
     model_config = ConfigDict(extra="forbid")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     cert: str | None = Field(default=None, description="parameter cert")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_create_ssl_context(ws, verify: str, cert: str | None, trust_env: bool) -> dict[str, Any]:
+def httpx_create_ssl_context(ws, *, verify: bool, cert: str | None, trust_env: bool) -> dict[str, Any]:
     """httpx.create_ssl_context
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
     try:
         result = httpx.create_ssl_context(
-            verify,
-            cert,
-            trust_env,
+            verify=verify,
+            cert=cert,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -51,11 +51,11 @@ class HttpxDeleteIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_delete(ws, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_delete(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `DELETE` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -64,15 +64,15 @@ def httpx_delete(ws, url: str, params: str | None, headers: str | None, cookies:
     """
     try:
         result = httpx.delete(
-            url,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -92,11 +92,11 @@ class HttpxGetIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_get(ws, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_get(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `GET` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -105,15 +105,15 @@ def httpx_get(ws, url: str, params: str | None, headers: str | None, cookies: st
     """
     try:
         result = httpx.get(
-            url,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -133,11 +133,11 @@ class HttpxHeadIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_head(ws, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_head(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `HEAD` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -146,15 +146,15 @@ def httpx_head(ws, url: str, params: str | None, headers: str | None, cookies: s
     """
     try:
         result = httpx.head(
-            url,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -174,11 +174,11 @@ class HttpxOptionsIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_options(ws, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_options(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends an `OPTIONS` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -187,15 +187,15 @@ def httpx_options(ws, url: str, params: str | None, headers: str | None, cookies
     """
     try:
         result = httpx.options(
-            url,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -219,11 +219,11 @@ class HttpxPatchIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_patch(ws, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_patch(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `PATCH` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -232,19 +232,19 @@ def httpx_patch(ws, url: str, content: str | None, data: str | None, files: str 
     """
     try:
         result = httpx.patch(
-            url,
-            content,
-            data,
-            files,
-            json,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            content=content,
+            data=data,
+            files=files,
+            json=json,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -268,11 +268,11 @@ class HttpxPostIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_post(ws, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_post(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `POST` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -281,19 +281,19 @@ def httpx_post(ws, url: str, content: str | None, data: str | None, files: str |
     """
     try:
         result = httpx.post(
-            url,
-            content,
-            data,
-            files,
-            json,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            content=content,
+            data=data,
+            files=files,
+            json=json,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -317,11 +317,11 @@ class HttpxPutIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_put(ws, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_put(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `PUT` request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -330,19 +330,19 @@ def httpx_put(ws, url: str, content: str | None, data: str | None, files: str | 
     """
     try:
         result = httpx.put(
-            url,
-            content,
-            data,
-            files,
-            json,
-            params,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            url=url,
+            content=content,
+            data=data,
+            files=files,
+            json=json,
+            params=params,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -367,11 +367,11 @@ class HttpxRequestIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_request(ws, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_request(ws, *, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends an HTTP request.
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -380,20 +380,20 @@ def httpx_request(ws, method: str, url: str, params: str | None, content: str | 
     """
     try:
         result = httpx.request(
-            method,
-            url,
-            params,
-            content,
-            data,
-            files,
-            json,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            method=method,
+            url=url,
+            params=params,
+            content=content,
+            data=data,
+            files=files,
+            json=json,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise
@@ -418,11 +418,11 @@ class HttpxStreamIn(BaseModel):
     auth: str | None = Field(default=None, description="parameter auth")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
-    verify: str = Field(default=True, description="parameter verify")
+    verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_stream(ws, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: str, trust_env: bool) -> dict[str, Any]:
+def httpx_stream(ws, *, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Alternative to `httpx.request()` that streams the response body
 
     Not exposed: timeout (non-literal defaults; the package's own defaults apply).
@@ -431,20 +431,20 @@ def httpx_stream(ws, method: str, url: str, params: str | None, content: str | N
     """
     try:
         result = httpx.stream(
-            method,
-            url,
-            params,
-            content,
-            data,
-            files,
-            json,
-            headers,
-            cookies,
-            auth,
-            proxy,
-            follow_redirects,
-            verify,
-            trust_env,
+            method=method,
+            url=url,
+            params=params,
+            content=content,
+            data=data,
+            files=files,
+            json=json,
+            headers=headers,
+            cookies=cookies,
+            auth=auth,
+            proxy=proxy,
+            follow_redirects=follow_redirects,
+            verify=verify,
+            trust_env=trust_env,
         )
     except ToolError:
         raise

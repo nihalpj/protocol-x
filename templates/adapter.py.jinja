@@ -24,7 +24,7 @@ class {{ fn.model_name }}(BaseModel):
 {%- endfor %}
 
 
-def {{ fn.tool_name }}(ws, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}) -> dict[str, Any]:
+def {{ fn.tool_name }}(ws, *, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}) -> dict[str, Any]:
     """{{ fn.description }}
 {% if fn.skipped %}
     Not exposed: {{ fn.skipped | join(", ") }} (non-literal defaults; the package's own defaults apply).
@@ -34,7 +34,7 @@ def {{ fn.tool_name }}(ws, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }
     try:
         result = {{ import_name }}.{{ fn.target }}(
 {%- for arg in fn.args %}
-            {{ arg.name }},
+            {% if arg.positional_only %}{{ arg.name }}{% else %}{{ arg.name }}={{ arg.name }}{% endif %},
 {%- endfor %}
         )
     except ToolError:

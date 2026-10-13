@@ -22,6 +22,7 @@ Config-file auto-discovery: with no `--config` flag and no `PROTOX_CONFIG`, `Set
 | `PROTOX_TF_ENDPOINT` | `https://api.tokenfactory.nebius.com/v1` | OpenAI-compatible chat-completions endpoint for the Token Factory client. |
 | `PROTOX_TF_JUDGE_MODEL` | `nvidia/Nemotron-3-Ultra-550b-a55b` | Model for AI-judge reviews (and codegen/repair escalation tier). |
 | `PROTOX_TF_FAST_MODEL` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | Model for converter/repair fast loops (proposal fallback, repair directives, patch generation). |
+| `PROTOX_TF_TIMEOUT_S` | `300` | HTTP read timeout for Token Factory calls. Reasoning models (e.g. the 550B judge) on large prompts take 60–190s; a shorter timeout surfaces as `judge-unavailable` (fail-closed, E-5). Config: `models.timeout_s`. |
 | `PROTOX_TF_ESCALATION_MODEL` | `nvidia/Nemotron-3-Ultra-550b-a55b` | Escalation model, parsed into `Settings` and configurable here/config (`models.escalation`). Currently reserved — no call site references it yet. |
 | `PROTOX_CPUS` | computed (F-038) | Override for the computed container CPU budget (`max(1, cores − 1)`, reserving 2 when cores > 8). Reported by `doctor` and `/api/status` as an override. |
 | `PROTOX_MEMORY` | computed (F-038) | Override for the computed memory budget (60% of RAM). Accepts `4096`, `4096m`, or `4g`. |

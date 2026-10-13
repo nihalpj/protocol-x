@@ -85,20 +85,30 @@ class Judge:
         prompt = self._build_prompt(adapter_source, module_name, lint_findings)
         log.info("judging adapter %s with %s (%d chars)", module_name, self.model, len(prompt))
         log.debug("judge prompt for %s:\n%s", module_name, prompt)
-        try:
-            completion = self.client.chat(
-                self.model,
-                [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=16384,  # reasoning models spend budget on reasoning_content
-            )
-        except InferenceError as exc:
-            log.error("judge unavailable for %s: %s", module_name, exc)
-            raise JudgeUnavailable(str(exc)) from exc
-        log.debug("judge raw response for %s: %s", module_name, fmt_obj(completion.content))
-        verdict = self._parse_verdict(completion.content)
+        last_error: JudgeUnavailable | None = None
+        for attempt in range(2):  # reasoning endpoints are stochastic: one parse retry
+            try:
+                completion = self.client.chat(
+                    self.model,
+                    [
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=32768,  # reasoning models spend budget on reasoning_content
+                )
+            except InferenceError as exc:
+                log.error("judge unavailable for %s: %s", module_name, exc)
+                raise JudgeUnavailable(str(exc)) from exc
+            log.debug("judge raw response for %s: %s", module_name, fmt_obj(completion.content))
+            try:
+                verdict = self._parse_verdict(completion.content)
+                break
+            except JudgeUnavailable as exc:
+                last_error = exc
+                log.warning("judge response for %s unparseable (attempt %d): %s",
+                            module_name, attempt + 1, exc)
+        else:
+            raise last_error or JudgeUnavailable("judge produced no verdict")
         verdict.model = completion.model
         verdict.prompt_hash = completion.prompt_hash
         verdict.rubric_version = self.rubric_version

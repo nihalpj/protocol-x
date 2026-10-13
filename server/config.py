@@ -131,6 +131,9 @@ class Settings:
             or models.get("escalation")
             or "nvidia/Nemotron-3-Ultra-550b-a55b"
         )
+        # Reasoning models on large prompts can take 60-190s — the HTTP read
+        # timeout must cover that or the judge flaps judge-unavailable (E-5).
+        self.tf_timeout_s = float(env.get("PROTOX_TF_TIMEOUT_S") or models.get("timeout_s") or 300)
 
         # F-038 env overrides (computed profile lives in core/sizing.py)
         self.cpus_override = env.get("PROTOX_CPUS")

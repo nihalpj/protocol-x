@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import builtins
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -34,25 +35,30 @@ from adapters.base import (
 # worker numpy's OpenBLAS thread pool cannot start under RLIMIT_NPROC=0 and the
 # worker is killed, so block the import and let openpyxl take its documented
 # ImportError fallback path. This adapter never needs numpy. The block is
-# conditional so importing this module in the unsandboxed server/test process
-# (registry discovery) leaves numpy untouched.
-def _block_numpy_in_sandbox() -> None:
+# scoped to each openpyxl import and removed afterwards: warm pool workers
+# serve many adapters, and a permanent sys.modules["numpy"] = None would
+# poison the pandas adapter's lazy numpy imports in the same worker.
+@contextmanager
+def _block_numpy_for_openpyxl():
     import resource
 
+    poison = False
     nproc = getattr(resource, "RLIMIT_NPROC", None)
     if nproc is not None:
         try:
             soft, _hard = resource.getrlimit(nproc)
         except (OSError, ValueError):
-            return
-        if soft == 0:
+            soft = None
+        if soft == 0 and "numpy" not in sys.modules:
             # A None sys.modules entry makes `import numpy` raise ImportError,
             # which openpyxl takes as its documented no-numpy fallback path.
-            modules: dict[str, Any] = sys.modules
-            modules["numpy"] = None
-
-
-_block_numpy_in_sandbox()
+            sys.modules["numpy"] = None
+            poison = True
+    try:
+        yield
+    finally:
+        if poison:
+            sys.modules.pop("numpy", None)
 
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_CELLS = 10_000  # per read/write range call (boundary-inclusive)
@@ -63,7 +69,8 @@ _INVALID_SHEET_CHARS = frozenset(":/\\?*[]")
 
 def _load(ws, path: str):
     """Resolve + magic-check + parse a workbook (formulas kept, never evaluated)."""
-    from openpyxl import load_workbook
+    with _block_numpy_for_openpyxl():
+        from openpyxl import load_workbook
 
     resolved = ws.resolve(path, must_exist=True)
     check_magic(resolved, "zip")
@@ -100,7 +107,8 @@ def _check_sheet_name(name: str) -> None:
 
 def _parse_range(range_str: str) -> tuple[int, int, int, int]:
     """Parse "A1:C10" -> (min_col, min_row, max_col, max_row)."""
-    from openpyxl.utils import range_boundaries
+    with _block_numpy_for_openpyxl():
+        from openpyxl.utils import range_boundaries
 
     try:
         return cast(tuple[int, int, int, int], range_boundaries(range_str))
@@ -114,7 +122,8 @@ def _parse_range(range_str: str) -> tuple[int, int, int, int]:
 
 def _parse_cell(cell: str) -> tuple[int, int]:
     """Parse a single cell coordinate "B2" -> (row, col)."""
-    from openpyxl.utils.cell import coordinate_to_tuple
+    with _block_numpy_for_openpyxl():
+        from openpyxl.utils.cell import coordinate_to_tuple
 
     try:
         return cast(tuple[int, int], coordinate_to_tuple(cell))
@@ -283,7 +292,8 @@ def xlsx_write_range(
 
 
 def xlsx_create(ws, sheets: list[dict[str, Any]], out_path: str | None = None) -> dict[str, Any]:
-    from openpyxl import Workbook
+    with _block_numpy_for_openpyxl():
+        from openpyxl import Workbook
 
     names = [spec["name"] for spec in sheets]
     if len(set(names)) != len(names):
@@ -332,7 +342,8 @@ def xlsx_add_chart(
     title: str,
     in_place: bool = False,
 ) -> dict[str, Any]:
-    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    with _block_numpy_for_openpyxl():
+        from openpyxl.chart import BarChart, LineChart, PieChart, Reference
     from openpyxl.utils import get_column_letter
 
     wb, resolved = _load(ws, path)

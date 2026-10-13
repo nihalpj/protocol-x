@@ -592,7 +592,8 @@ def production_judge(settings, module_name: str):
     from agents.tokenfactory import TokenFactoryClient
 
     judge = Judge(
-        TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint),
+        TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                           timeout_s=settings.tf_timeout_s),
         settings.tf_judge_model,
     )
 
@@ -652,7 +653,8 @@ def llm_repairer(settings):
         return None
     from agents.tokenfactory import InferenceError, TokenFactoryClient
 
-    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint)
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                                timeout_s=settings.tf_timeout_s)
 
     def repair(findings, proposals, context):
         prompt = (
@@ -696,7 +698,8 @@ def llm_proposer(settings):
         return None
     from agents.tokenfactory import InferenceError, TokenFactoryClient
 
-    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint)
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                                timeout_s=settings.tf_timeout_s)
 
     def propose(mod) -> list[ToolProposal]:
         candidates = [

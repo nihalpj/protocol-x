@@ -52,7 +52,8 @@ class RepairAgent:
             from agents.tokenfactory import TokenFactoryClient
 
             self._client = TokenFactoryClient(
-                ctx.settings.tf_api_key, ctx.settings.tf_endpoint)
+                ctx.settings.tf_api_key, ctx.settings.tf_endpoint,
+                timeout_s=ctx.settings.tf_timeout_s)
             self._judge = Judge(self._client, ctx.settings.tf_judge_model)
 
     @property
