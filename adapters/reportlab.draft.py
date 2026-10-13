@@ -2,15 +2,15 @@
 # preserved: regeneration writes adapters/reportlab.draft.py instead of
 # overwriting this file (E-7).
 # INV-1: fixed wrappers only — no eval/exec, no free-form code-string params.
+# ruff: noqa: E501  (generated code: machine-length signatures and descriptions)
 from __future__ import annotations
 
 from typing import Any
 
+import reportlab  # introspected installed package, v5.0.1
 from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
-
-import reportlab  # introspected installed package, v5.0.1
 
 
 class ReportlabCmpIn(BaseModel):
