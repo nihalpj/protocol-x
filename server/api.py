@@ -91,7 +91,7 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                     "fast": {"value": s.tf_fast_model, "source": "env/config"},
                 },
                 "agent_features_enabled": s.agent_features_enabled,
-                "sizing_overrides": s.sizing.overrides,
+                "sizing_overrides": ctx.sizing.overrides,
             }
         )
 
