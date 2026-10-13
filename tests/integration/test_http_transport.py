@@ -102,6 +102,19 @@ async def test_query_token_bootstrap(auth_ctx):
         assert httpx.get(f"{base}/?token=tok-full").status_code == 200
 
 
+async def test_static_assets_open(auth_ctx):
+    """Console static bundle must load without credentials — browser module
+    scripts can send neither Authorization headers nor query tokens."""
+    with RunningServer(auth_ctx, _free_port()) as srv:
+        import httpx
+
+        base = f"http://127.0.0.1:{srv.port}"
+        resp = httpx.get(f"{base}/assets/index.js")
+        assert resp.status_code != 401
+        # data routes stay walled off
+        assert httpx.get(f"{base}/api/status").status_code == 401
+
+
 async def test_valid_token_call(auth_ctx, sample_png):
     with RunningServer(auth_ctx, _free_port()) as srv:
         async with Client(

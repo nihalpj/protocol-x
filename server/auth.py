@@ -24,6 +24,7 @@ current_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 OPEN_PATHS = ("/health", "/metrics")
+OPEN_PREFIXES = ("/assets/",)
 
 
 def hash_token(token: str) -> str:
@@ -69,7 +70,9 @@ class TokenStore:
 
 class BearerAuthMiddleware:
     """Pure-ASGI middleware: 401 without a valid bearer token when tokens are
-    configured. /health and /metrics stay open (doctor + scrape targets)."""
+    configured. /health and /metrics stay open (doctor + scrape targets), and
+    /assets/* stays open (console static bundle — module scripts cannot send
+    credentials; the bundle itself carries no data)."""
 
     def __init__(self, app: ASGIApp, store: TokenStore):
         self.app = app
@@ -80,7 +83,7 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if path in OPEN_PATHS:
+        if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES):
             await self.app(scope, receive, send)
             return
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
