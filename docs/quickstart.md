@@ -49,7 +49,15 @@ curl -s -H "Authorization: Bearer <token>" localhost:7894/api/status
 ```
 
 The operator console (registry browser, telemetry, governance, builder) is
-served at `/`. A sample image for the image tools is bundled at
+served at `/`. Browsers cannot send `Authorization` headers, so open it once
+with the bearer token as a query parameter — the console stores it in
+localStorage, strips it from the URL, and sends it as a header from then on:
+
+```
+http://127.0.0.1:7894/?token=<token>
+```
+
+A sample image for the image tools is bundled at
 `samples/sample.png` — copy it into your workspace:
 
 ```bash

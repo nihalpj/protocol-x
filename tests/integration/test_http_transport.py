@@ -87,6 +87,21 @@ async def test_no_token_401(auth_ctx):
         assert httpx.get(f"http://127.0.0.1:{srv.port}/health").status_code == 200
 
 
+async def test_query_token_bootstrap(auth_ctx):
+    """Browser console flow: /?token=... authenticates like a Bearer header."""
+    with RunningServer(auth_ctx, _free_port()) as srv:
+        import httpx
+
+        base = f"http://127.0.0.1:{srv.port}"
+        assert httpx.get(f"{base}/api/status").status_code == 401
+        assert httpx.get(f"{base}/api/status?token=wrong").status_code == 401
+        resp = httpx.get(f"{base}/api/status?token=tok-full")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        # SPA shell reachable with the bootstrap token too
+        assert httpx.get(f"{base}/?token=tok-full").status_code == 200
+
+
 async def test_valid_token_call(auth_ctx, sample_png):
     with RunningServer(auth_ctx, _free_port()) as srv:
         async with Client(

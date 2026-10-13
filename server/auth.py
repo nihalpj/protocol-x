@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+from urllib.parse import unquote_plus
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -27,6 +28,17 @@ OPEN_PATHS = ("/health", "/metrics")
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _query_token(scope: Scope) -> str:
+    """Browser bootstrap credential: /?token=... for the console SPA, which
+    cannot set Authorization headers on navigation. The SPA moves it to
+    localStorage and strips it from the URL on load."""
+    qs = scope.get("query_string", b"").decode(errors="replace")
+    for part in qs.split("&"):
+        if part.startswith("token="):
+            return unquote_plus(part[len("token="):]).strip()
+    return ""
 
 
 class TokenStore:
@@ -74,6 +86,8 @@ class BearerAuthMiddleware:
         headers = {k.lower(): v for k, v in scope.get("headers", [])}
         auth = headers.get(b"authorization", b"").decode(errors="replace")
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+        if not token:
+            token = _query_token(scope)
         if not token or not self.store.validate(token):
             body = json.dumps(
                 {"error": {"code": "UNAUTHORIZED", "message": "valid bearer token required"}}

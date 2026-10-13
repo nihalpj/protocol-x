@@ -166,6 +166,26 @@ export interface Snippets {
 
 // ---------- client ----------
 
+const TOKEN_KEY = "protox.token";
+
+// Browsers cannot set Authorization on navigation, so the console is opened
+// as /?token=... once; the token is moved to localStorage and stripped from
+// the URL, then sent as a Bearer header on every /api call.
+function bootstrapToken(): string {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("token");
+  if (fromUrl) {
+    localStorage.setItem(TOKEN_KEY, fromUrl);
+    params.delete("token");
+    const rest = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    return fromUrl;
+  }
+  return localStorage.getItem(TOKEN_KEY) ?? "";
+}
+
+const bearerToken = bootstrapToken();
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -183,8 +203,12 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const body: unknown = await resp.json().catch(() => null);
   if (!resp.ok) throw new ApiError(resp.status, body);
