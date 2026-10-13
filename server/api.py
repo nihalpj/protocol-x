@@ -110,11 +110,22 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         if "tf_fast_model" in updates:
             s.tf_fast_model = str(updates["tf_fast_model"])
         before = {"preset": s.preset_name, **updates}
-        # persist under data_dir; env still wins on restart (documented)
+        # persist under data_dir; env still wins on restart (documented).
+        # Merge into the existing file so wizard-written keys (api_key,
+        # tokens, workspace) survive a console settings update.
         cfg_path = s.data_dir / "server.yaml"
-        cfg_path.write_text(yaml.safe_dump({"models": {
+        existing: dict = {}
+        if cfg_path.exists():
+            try:
+                existing = yaml.safe_load(cfg_path.read_text()) or {}
+            except yaml.YAMLError:
+                existing = {}
+        models = dict(existing.get("models") or {})
+        models.update({
             "endpoint": s.tf_endpoint, "judge": s.tf_judge_model, "fast": s.tf_fast_model,
-        }}))
+        })
+        existing["models"] = models
+        cfg_path.write_text(yaml.safe_dump(existing, sort_keys=False))
         ctx.audit.record("config", "operator", {"event": "settings-update", "changes": before})
         return JSONResponse({"ok": True, "applied": sorted(updates), "persisted_to": str(cfg_path)})
 

@@ -98,36 +98,131 @@ def run_checks(settings: Settings, quick: bool) -> list[Check]:
     return checks
 
 
-def _full_checks(settings: Settings) -> list[Check]:
-    """Full mode (P9): spawn test, workspace I/O, transport self-check, TF reachability."""
-    checks: list[Check] = []
+def _check_sandbox_spawn(settings: Settings) -> Check:
+    """Full probe: spawn a sandboxed worker and run image_info on a real PNG."""
     try:
+        from PIL import Image
+
         from core.sandbox.runner import CallRequest, SubprocessRunner
 
-        runner = SubprocessRunner()
         settings.workspace_root.mkdir(parents=True, exist_ok=True)
-        # smoke: run image_info is adapter-dependent; a spawn-only probe uses the python backend env
-        env = runner.worker_env()
+        probe = settings.workspace_root / ".doctor-probe.png"
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(probe)
+        try:
+            runner = SubprocessRunner()
+            result = runner.run(
+                CallRequest(
+                    adapter_module="images_pillow",
+                    tool_name="image_info",
+                    args={"path": probe.name},
+                    workspace=str(settings.workspace_root),
+                    timeout_s=30,
+                    network=False,
+                    backend="python",
+                    cpu_s=settings.limit_cpu_s,
+                    rss_mb=settings.limit_rss_mb,
+                    fs_mb=settings.limit_fs_mb,
+                )
+            )
+        finally:
+            probe.unlink(missing_ok=True)
+        detail = f"worker ran image_info: {str(result)[:80]}"
+        return Check("sandbox-spawn", "green", detail)
+    except Exception as exc:
+        return Check(
+            "sandbox-spawn",
+            "red",
+            f"{type(exc).__name__}: {exc}",
+            "sandboxed spawn failed — check rlimits and the adapters/images_pillow.py install; "
+            "on non-POSIX hosts use the Docker profile",
+        )
+
+
+def _check_worker_env(settings: Settings) -> Check:
+    try:
+        from core.sandbox.runner import SubprocessRunner
+
+        env = SubprocessRunner().worker_env()
         leaked = [k for k in settings.secrets if k in env]
         if leaked:
-            checks.append(Check("worker-env-scrubbed", "red", f"secrets leak into worker env: {leaked}"))
-        else:
-            checks.append(Check("worker-env-scrubbed", "green", "worker env carries no configured secrets"))
-        _ = CallRequest  # full spawn probe lands in P9 with a hello adapter
+            return Check("worker-env-scrubbed", "red", f"secrets leak into worker env: {leaked}")
+        return Check("worker-env-scrubbed", "green", "worker env carries no configured secrets")
     except Exception as exc:
-        checks.append(Check("worker-env-scrubbed", "red", str(exc)))
-    if settings.tf_api_key:
-        checks.append(Check("token-factory", "yellow", "key configured; live reachability probe lands in P9"))
-    else:
-        checks.append(
-            Check(
-                "token-factory",
-                "yellow",
-                "no PROTOX_TF_API_KEY — degraded mode: 38 core tools live, agent features disabled (E-20)",
-                "add a Token Factory key to enable the judge / converter / repair agents",
-            )
+        return Check("worker-env-scrubbed", "red", str(exc))
+
+
+def _check_transport(settings: Settings) -> Check:
+    """Transport self-check: ASGI app boots, /health answers, auth guards /mcp."""
+    try:
+        from starlette.testclient import TestClient
+
+        from server.app import AppContext, build_http_app
+
+        ctx = AppContext(settings)
+        try:
+            client = TestClient(build_http_app(ctx))
+            resp = client.get("/health")
+            if resp.status_code != 200:
+                return Check("transport", "red", f"/health returned {resp.status_code}")
+            if settings.tokens:
+                guarded = client.post("/mcp", json={})
+                if guarded.status_code not in (401, 403):
+                    return Check(
+                        "transport",
+                        "red",
+                        f"/mcp without a bearer token returned {guarded.status_code}",
+                        "auth middleware is not gating the MCP endpoint — do not expose this port",
+                    )
+            return Check("transport", "green", "http app boots; /health ok; /mcp auth enforced")
+        finally:
+            ctx.store.close()
+    except Exception as exc:
+        return Check("transport", "red", f"{type(exc).__name__}: {exc}")
+
+
+def _check_token_factory(settings: Settings) -> Check:
+    if not settings.tf_api_key:
+        return Check(
+            "token-factory",
+            "yellow",
+            "no Token Factory key — degraded mode: core tools live, agent features off (E-20)",
+            "run `protocol-x-tool-mcp setup` or set PROTOX_TF_API_KEY to enable the agents",
         )
-    return checks
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"{settings.tf_endpoint.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {settings.tf_api_key}"},
+            timeout=8.0,
+        )
+    except Exception as exc:
+        return Check(
+            "token-factory",
+            "yellow",
+            f"endpoint unreachable: {type(exc).__name__} — agent features will fail closed",
+            "check egress to the Token Factory endpoint (INV-8 allowlist)",
+        )
+    if resp.status_code in (401, 403):
+        return Check(
+            "token-factory",
+            "red",
+            f"key rejected (HTTP {resp.status_code})",
+            "rotate the Token Factory key (`protocol-x-tool-mcp setup` or PROTOX_TF_API_KEY)",
+        )
+    if resp.status_code == 200:
+        return Check("token-factory", "green", f"{settings.tf_endpoint} reachable, key accepted")
+    return Check("token-factory", "yellow", f"HTTP {resp.status_code} from endpoint")
+
+
+def _full_checks(settings: Settings) -> list[Check]:
+    """Full mode (P9): spawn probe, env scrub, transport self-check, TF probe."""
+    return [
+        _check_sandbox_spawn(settings),
+        _check_worker_env(settings),
+        _check_transport(settings),
+        _check_token_factory(settings),
+    ]
 
 
 def run_doctor(quick: bool = False, settings: Settings | None = None) -> int:

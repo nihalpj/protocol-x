@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 CPU_S = 25
 RSS_MB = 512
 FS_MB = 100
@@ -19,8 +21,7 @@ def apply_limits(
     fs = fs_mb * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_FSIZE, (fs, fs))
     if nproc_zero:
-        try:
+        # fails for root / some platforms; best-effort
+        with contextlib.suppress(ValueError, OSError):
             resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-        except (ValueError, OSError):
-            pass  # fails for root / some platforms; best-effort
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))

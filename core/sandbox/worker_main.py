@@ -48,10 +48,7 @@ def main() -> int:
         spec = _find_tool(call["adapter_module"], call["tool_name"])
         ws = Workspace(call["workspace"])
         result = spec.handler(ws, **call["args"])
-        if isinstance(result, BinaryResult):
-            payload = binary_to_wire(result)
-        else:
-            payload = result
+        payload = binary_to_wire(result) if isinstance(result, BinaryResult) else result
         out = {"ok": True, "result": payload}
     except ToolError as exc:
         out = {"ok": False, "error": exc.to_dict()}

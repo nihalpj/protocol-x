@@ -44,7 +44,14 @@ def demo_read(ws, path: str) -> dict:
     resolved = ws.resolve(path, must_exist=True)
     return {"content": resolved.read_text()[:1024]}
 
-TOOLS = [ToolSpec(name="demo_read", description="Read a workspace file (limits: 1MB, 30s)", input_model=In, handler=demo_read)]
+TOOLS = [
+    ToolSpec(
+        name="demo_read",
+        description="Read a workspace file (limits: 1MB, 30s)",
+        input_model=In,
+        handler=demo_read,
+    )
+]
 '''
 
 

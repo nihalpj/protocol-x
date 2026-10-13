@@ -26,6 +26,19 @@ class ConfigError(Exception):
 class Settings:
     def __init__(self, env: dict[str, str] | None = None, config_file: str | None = None):
         env = dict(os.environ if env is None else env)
+        # Default config location: <data_dir>/server.yaml (written by the setup
+        # wizard, F-031). An explicit --config always wins; PROTOX_CONFIG
+        # overrides the auto-discovered path.
+        if config_file is None:
+            candidate = env.get("PROTOX_CONFIG")
+            if candidate:
+                config_file = candidate
+            else:
+                prelim = Path(
+                    env.get("PROTOX_DATA_DIR") or _DEFAULT_DATA_DIR
+                ).expanduser()
+                if (prelim / "server.yaml").exists():
+                    config_file = str(prelim / "server.yaml")
         file_cfg: dict[str, Any] = {}
         if config_file:
             try:
@@ -34,6 +47,7 @@ class Settings:
                 raise ConfigError(f"invalid YAML in config file {config_file}: {exc}") from exc
             if not isinstance(file_cfg, dict):
                 raise ConfigError(f"config file {config_file} must contain a mapping")
+        self.config_file = config_file
 
         self.data_dir = Path(
             env.get("PROTOX_DATA_DIR") or file_cfg.get("data_dir") or _DEFAULT_DATA_DIR
@@ -96,7 +110,7 @@ class Settings:
         self.default_timeout_s = int(sbx.get("default_timeout_s", 30))
 
         models = file_cfg.get("models") or {}
-        self.tf_api_key = env.get("PROTOX_TF_API_KEY", "")
+        self.tf_api_key = env.get("PROTOX_TF_API_KEY") or models.get("api_key", "")
         self.tf_endpoint = (
             env.get("PROTOX_TF_ENDPOINT")
             or models.get("endpoint")

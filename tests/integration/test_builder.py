@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agents.codegen import Builder, introspect_package, render_tool_format, static_gate
@@ -42,7 +44,7 @@ def test_generate_static_gate_merge(builder, ctx, tmp_env):
 def test_generated_adapter_passes_static_gate(builder):
     result = builder.generate("json", ["loads"])
     source_path = result["path"]
-    assert static_gate(open(source_path).read()) == []
+    assert static_gate(Path(source_path).read_text()) == []
 
 
 def test_regeneration_writes_draft(builder):

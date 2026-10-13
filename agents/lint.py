@@ -67,7 +67,8 @@ def lint_adapter_source(source: str) -> list[LintFinding]:
                     LintFinding(
                         node.lineno,
                         "inv-1",
-                        f"parameter '{node.target.id}' looks like a free-form code/query string — use fixed operations",
+                        f"parameter '{node.target.id}' looks like a free-form code/query string"
+                        " — use fixed operations",
                     )
                 )
     if "TOOLS" not in _assigned_names(tree):
@@ -107,9 +108,12 @@ def _models_without_forbid(tree: ast.AST) -> list[tuple[str, int]]:
 def _class_has_forbid(node: ast.ClassDef) -> bool:
     # class X(BaseModel, extra="forbid")
     for keyword in node.keywords:
-        if keyword.arg == "extra" and isinstance(keyword.value, ast.Constant):
-            if keyword.value.value == "forbid":
-                return True
+        if (
+            keyword.arg == "extra"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "forbid"
+        ):
+            return True
     for stmt in node.body:
         # model_config = ConfigDict(extra="forbid") or {"extra": "forbid"}
         if isinstance(stmt, ast.Assign) and any(
@@ -118,7 +122,11 @@ def _class_has_forbid(node: ast.ClassDef) -> bool:
             value = stmt.value
             if isinstance(value, ast.Call):
                 for kw in value.keywords:
-                    if kw.arg == "extra" and isinstance(kw.value, ast.Constant) and kw.value.value == "forbid":
+                    if (
+                        kw.arg == "extra"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value == "forbid"
+                    ):
                         return True
             if isinstance(value, ast.Dict):
                 for k, v in zip(value.keys, value.values, strict=False):

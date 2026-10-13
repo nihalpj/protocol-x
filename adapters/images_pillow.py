@@ -16,7 +16,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from adapters.base import CORRUPT_FILE, VALIDATION_ERROR, ToolError, ToolSpec
 
 MAX_DIM = 8192
-_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif", "BMP": "image/bmp", "TIFF": "image/tiff"}
+_MIME = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+    "BMP": "image/bmp",
+    "TIFF": "image/tiff",
+}
 
 
 def _load(ws, path: str):
@@ -113,7 +120,9 @@ def image_resize(ws, path: str, width: int, height: int, out_path: str | None = 
     return _save(ws, resized, out_path, fmt, f"resized-{width}x{height}.{fmt.lower()}")
 
 
-def image_crop(ws, path: str, left: int, top: int, right: int, bottom: int, out_path: str | None = None) -> dict:
+def image_crop(
+    ws, path: str, left: int, top: int, right: int, bottom: int, out_path: str | None = None
+) -> dict:
     img, _ = _load(ws, path)
     if right > img.width or bottom > img.height or right <= left or bottom <= top:
         raise ToolError(
@@ -175,12 +184,55 @@ def image_strip_metadata(ws, path: str, out_path: str | None = None) -> dict:
 
 
 TOOLS = [
-    ToolSpec("image_info", "Read image metadata (dimensions, format, mode, EXIF presence). Input: workspace image path.", ImageInfoIn, image_info),
-    ToolSpec("image_resize", f"Resize an image to width×height px (each 1–{MAX_DIM}). Output: workspace file resource.", ImageResizeIn, image_resize, limits={"max_dim": MAX_DIM}),
-    ToolSpec("image_crop", "Crop an image to a pixel box (left, top, right, bottom); box must lie inside the image.", ImageCropIn, image_crop),
-    ToolSpec("image_rotate", "Rotate an image by degrees counter-clockwise; expand keeps the full rotated image.", ImageRotateIn, image_rotate),
-    ToolSpec("image_convert_format", "Convert an image to PNG/JPEG/WEBP/GIF/BMP/TIFF. JPEG drops alpha (a warning is returned).", ImageConvertIn, image_convert_format),
-    ToolSpec("image_thumbnail", f"Create a thumbnail with longest side ≤ max_size px (1–{MAX_DIM}).", ImageThumbnailIn, image_thumbnail, limits={"max_dim": MAX_DIM}),
-    ToolSpec("image_compress_jpeg", "Re-encode an image as JPEG with quality 1–95 (boundary-inclusive).", ImageCompressIn, image_compress_jpeg, limits={"quality_max": 95}),
-    ToolSpec("image_strip_metadata", "Remove EXIF/GPS metadata; output contains no EXIF segment.", ImageStripIn, image_strip_metadata),
+    ToolSpec(
+        "image_info",
+        "Read image metadata (dimensions, format, mode, EXIF presence). Input: workspace image path.",
+        ImageInfoIn,
+        image_info,
+    ),
+    ToolSpec(
+        "image_resize",
+        f"Resize an image to width×height px (each 1–{MAX_DIM}). Output: workspace file resource.",
+        ImageResizeIn,
+        image_resize,
+        limits={"max_dim": MAX_DIM},
+    ),
+    ToolSpec(
+        "image_crop",
+        "Crop an image to a pixel box (left, top, right, bottom); box must lie inside the image.",
+        ImageCropIn,
+        image_crop,
+    ),
+    ToolSpec(
+        "image_rotate",
+        "Rotate an image by degrees counter-clockwise; expand keeps the full rotated image.",
+        ImageRotateIn,
+        image_rotate,
+    ),
+    ToolSpec(
+        "image_convert_format",
+        "Convert an image to PNG/JPEG/WEBP/GIF/BMP/TIFF. JPEG drops alpha (a warning is returned).",
+        ImageConvertIn,
+        image_convert_format,
+    ),
+    ToolSpec(
+        "image_thumbnail",
+        f"Create a thumbnail with longest side ≤ max_size px (1–{MAX_DIM}).",
+        ImageThumbnailIn,
+        image_thumbnail,
+        limits={"max_dim": MAX_DIM},
+    ),
+    ToolSpec(
+        "image_compress_jpeg",
+        "Re-encode an image as JPEG with quality 1–95 (boundary-inclusive).",
+        ImageCompressIn,
+        image_compress_jpeg,
+        limits={"quality_max": 95},
+    ),
+    ToolSpec(
+        "image_strip_metadata",
+        "Remove EXIF/GPS metadata; output contains no EXIF segment.",
+        ImageStripIn,
+        image_strip_metadata,
+    ),
 ]

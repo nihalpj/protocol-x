@@ -189,7 +189,10 @@ class Builder:
         functions = [
             {
                 "tool_name": f"{module_name}_{_safe_name(c.name)}"[:64],
-                "model_name": f"{module_name.title().replace('_', '')}{_safe_name(c.name).title().replace('_', '')}In",
+                "model_name": (
+                    f"{module_name.title().replace('_', '')}"
+                    f"{_safe_name(c.name).title().replace('_', '')}In"
+                ),
                 "target": c.name,
                 "description": c.doc[:200],
                 "args": c.args,
@@ -214,7 +217,12 @@ class Builder:
             target.write_text(source)
             written = str(target)
             self._register_draft(module_name, functions)
-        return {"state": "generated", "module": module_name, "path": written, "tools": [f["tool_name"] for f in functions]}
+        return {
+            "state": "generated",
+            "module": module_name,
+            "path": written,
+            "tools": [f["tool_name"] for f in functions],
+        }
 
     def _register_draft(self, module_name: str, functions: list[dict]) -> None:
         for fn in functions:
@@ -231,7 +239,9 @@ class Builder:
             return MergeResult(state="generation-failed", diagnostics=problems)
 
         if not self.ctx.settings.agent_features_enabled:
-            return MergeResult(state="judge-unavailable", diagnostics=["no Token Factory key (degraded mode E-20)"])
+            return MergeResult(
+                state="judge-unavailable", diagnostics=["no Token Factory key (degraded mode E-20)"]
+            )
 
         from agents.tokenfactory import TokenFactoryClient
 
@@ -254,7 +264,9 @@ class Builder:
         try:
             self.ctx.registry.refresh_module(module_name)
         except Exception as exc:
-            return MergeResult(state="generation-failed", verdict=verdict, diagnostics=[f"registry load failed: {exc}"])
+            return MergeResult(
+                state="generation-failed", verdict=verdict, diagnostics=[f"registry load failed: {exc}"]
+            )
         tools = [
             e.name for e in self.ctx.registry.catalog.values() if e.adapter_module == module_name
         ]

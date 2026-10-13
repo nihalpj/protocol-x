@@ -60,8 +60,9 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_doctor(quick=args.quick)
     if args.command == "setup":
-        print("setup wizard lands in P9; see docs/quickstart.md for manual setup", file=sys.stderr)
-        return 0
+        from server.setup import run_setup
+
+        return run_setup()
     if args.command == "convert":
         if not args.package:
             print("convert requires a package name", file=sys.stderr)

@@ -254,7 +254,8 @@ class RunRepo:
 
     def latest_open(self, package: str) -> dict | None:
         row = self.conn.execute(
-            "SELECT * FROM conversion_runs WHERE package=? AND outcome IS NULL ORDER BY started_ts DESC LIMIT 1",
+            "SELECT * FROM conversion_runs WHERE package=? AND outcome IS NULL "
+            "ORDER BY started_ts DESC LIMIT 1",
             (package,),
         ).fetchone()
         return dict(row) if row else None
@@ -275,8 +276,8 @@ class IncidentRepo:
         state: str = "healing",
     ) -> int:
         cur = self.conn.execute(
-            """INSERT INTO repair_incidents(tool, error_class, input_json, adapter_version_id, attempts, state, window_start_ts)
-               VALUES (?, ?, ?, ?, 0, ?, ?)""",
+            "INSERT INTO repair_incidents(tool, error_class, input_json, adapter_version_id,"
+            " attempts, state, window_start_ts) VALUES (?, ?, ?, ?, 0, ?, ?)",
             (tool, error_class, input_json, adapter_version_id, state, _now()),
         )
         return int(cur.lastrowid)
@@ -314,7 +315,8 @@ class IncidentRepo:
         if since_ts is not None:
             threshold = max(threshold, since_ts)
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM repair_incidents WHERE tool=? AND state='rolled-back' AND window_start_ts > ?",
+            "SELECT COUNT(*) FROM repair_incidents WHERE tool=? AND state='rolled-back' "
+            "AND window_start_ts > ?",
             (tool, threshold),
         ).fetchone()
         return int(row[0])
