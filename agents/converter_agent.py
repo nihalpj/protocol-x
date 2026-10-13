@@ -82,6 +82,10 @@ try:
 except ImportError:  # direct script execution: python3 agents/converter_agent.py
     from react import ReActTracer  # type: ignore[no-redef]
 
+from core.logging import fmt_obj, get_logger
+
+log = get_logger("converter")
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
 MAX_JUDGE_CYCLES = 3    # circuit breaker: blocked-verdict repair loop (E-10)
@@ -207,6 +211,7 @@ class ConverterAgent:
 
     # ------------------------------------------------------------ pipeline
     def run(self) -> ConversionResult:
+        log.info("conversion started: package=%s workdir=%s", self.package, self.workdir)
         if self._done("codegen") and self._done("format"):
             proposals = self._load_proposals()
             adapter_path = self.workdir / f"{self._mod_name()}.py"
@@ -234,6 +239,8 @@ class ConverterAgent:
             if not proposals:
                 self._reject("not-convertible",
                              "no wrappable functions found by heuristic introspection or LLM proposal")
+            log.info("converter: %d tool proposals for %s", len(proposals), self.package)
+            log.debug("proposals: %s", fmt_obj([p.tool_name for p in proposals]))
             self._save_proposals(proposals)
             self._checkpoint("proposed")
 
@@ -250,6 +257,7 @@ class ConverterAgent:
             self._checkpoint("format")
 
         verdict = self._judge_with_repairs(adapter_path, proposals)
+        log.info("converter: final verdict for %s: %s", self.package, verdict)
         merge_note = self.tracer.act(
             f"verdict {verdict!r} — auto-merge without human action (v1.4)",
             "registry.register(adapter)",
@@ -544,6 +552,9 @@ class ConverterAgent:
             f"autonomous rejection: {code}",
             "write rejection.json — terminal, fail-closed (INV-6); no human hand-off",
             detail)
+        log.error(
+            "conversion of %s rejected [%s]: %s", self.package, code, detail
+        )
         raise ConversionRejected(f"{code}: {detail}")
 
     # ------------------------------------------------------------- helpers

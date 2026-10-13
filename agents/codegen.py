@@ -14,6 +14,7 @@ import ast
 import inspect
 import py_compile
 import re
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,9 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from agents.judge import Judge, JudgeUnavailable, JudgeVerdict
 from agents.lint import lint_adapter_source
+from core.logging import fmt_obj, get_logger
+
+log = get_logger("codegen")
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
@@ -152,6 +156,7 @@ def render_adapter(
     return template.render(
         module_name=module_name,
         import_name=import_name,
+        import_is_stdlib=import_name.split(".")[0] in sys.stdlib_module_names,
         package_version=package_version,
         functions=functions,
         agent_name=agent_name,
@@ -239,6 +244,7 @@ class Builder:
         )
         problems = static_gate(source)
         if problems:
+            log.warning("generated adapter %s rejected by static gate: %s", module_name, problems)
             return {"state": "generation-failed", "diagnostics": problems}
 
         target = self.ctx.registry.adapters_dir / f"{module_name}.py"
@@ -247,10 +253,15 @@ class Builder:
             draft = target.with_suffix(".draft.py")
             draft.write_text(source)
             written = str(draft)
+            log.info("adapter %s regenerated as draft %s (existing file preserved)", module_name, draft)
         else:
             target.write_text(source)
             written = str(target)
             self._register_draft(module_name, functions)
+            log.info(
+                "generated adapter %s (%d tools, %d chars) at %s",
+                module_name, len(functions), len(source), written,
+            )
         return {
             "state": "generated",
             "module": module_name,
@@ -291,6 +302,7 @@ class Builder:
         self.ctx.audit.record("verdict", "judge", {**verdict.to_dict(), "module": module_name})
 
         if verdict.verdict == "blocked":
+            log.warning("adapter %s blocked by judge: %s", module_name, fmt_obj(verdict.findings))
             return MergeResult(state="blocked", verdict=verdict)
 
         # pass / pass-with-warnings -> auto-merge (UF-01 step 10a/10b)
@@ -298,6 +310,7 @@ class Builder:
         try:
             self.ctx.registry.refresh_module(module_name)
         except Exception as exc:
+            log.error("adapter %s failed registry load after judge pass: %s", module_name, exc)
             return MergeResult(
                 state="generation-failed", verdict=verdict, diagnostics=[f"registry load failed: {exc}"]
             )
@@ -307,6 +320,9 @@ class Builder:
         for name in tools:
             self.ctx.registry.set_state(name, "live")
             self.ctx.store.tools.upsert(name, "live", module_name, "python", version_id)
+        log.info(
+            "adapter %s merged live (%s): %s", module_name, verdict.verdict, tools
+        )
         self.ctx.audit.record(
             "merge", "server",
             {"module": module_name, "verdict": verdict.verdict, "warnings": verdict.findings, "tools": tools},

@@ -17,6 +17,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from core.logging import get_logger
+
+log = get_logger("installer")
+
 # PEP 508 name, no version specifiers / extras / URLs — plain names only.
 _NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,212}[A-Za-z0-9])?$")
 TIMEOUT_S = 180
@@ -51,18 +55,22 @@ def install_package(name: str, timeout_s: int = TIMEOUT_S) -> InstallResult:
         )
     existing = installed_version(name)
     if existing:
+        log.debug("package %s already installed (v%s)", name, existing)
         return InstallResult(name, existing, "", already_installed=True)
 
     if shutil.which("uv"):
         cmd = ["uv", "pip", "install", "--python", sys.executable, name]
     else:
         cmd = [sys.executable, "-m", "pip", "install", name]
+    log.info("installing package %s: %s", name, " ".join(cmd))
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        log.error("install of %s timed out after %ss", name, timeout_s)
         raise InstallError(f"install of {name!r} timed out after {timeout_s}s") from None
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+        log.error("install of %s failed (exit %s): %s", name, proc.returncode, tail)
         raise InstallError(
             f"install of {name!r} failed (exit {proc.returncode})", "\n".join(tail)
         )
@@ -72,4 +80,5 @@ def install_package(name: str, timeout_s: int = TIMEOUT_S) -> InstallResult:
         raise InstallError(
             f"install of {name!r} reported success but the package is not importable"
         )
+    log.info("installed %s v%s", name, version)
     return InstallResult(name, version, " ".join(cmd))

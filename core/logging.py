@@ -1,4 +1,10 @@
-"""Structured JSON logging (F-016): one line per tool call, self-hosted only."""
+"""Structured JSON logging (F-016): one line per tool call, self-hosted only.
+
+Also home of the app's human-readable logging setup: `setup_logging()`
+configures stdlib logging (level from PROTOX_LOG_LEVEL / server.yaml /
+--log-level), `get_logger()` hands out `protox.<module>` loggers, and
+`fmt_obj()` safely prints arbitrary objects (capped repr) into log lines.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +15,51 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 _LOCK = threading.Lock()
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def setup_logging(level: str = "INFO", log_file: str | Path | None = None) -> None:
+    """Configure stdlib logging app-wide. Idempotent (force=True).
+
+    Human-readable lines go to stderr (captured by scripts/start.sh into
+    server.log) and, when log_file is given, to a rotating file under
+    <data_dir>/logs/.
+    """
+    resolved = level.upper()
+    if resolved not in LOG_LEVELS:
+        resolved = "INFO"
+    lvl = getattr(logging, resolved)
+    fmt = "%(asctime)s %(levelname)-5s [%(name)s] %(message)s"
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        path = Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3))
+    logging.basicConfig(level=lvl, format=fmt, handlers=handlers, force=True)
+    if lvl > logging.DEBUG:
+        # keep chatty libraries quiet unless debugging
+        for noisy in ("httpx", "httpcore", "uvicorn.access", "watchfiles"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """App logger named protox.<name> (levels: debug/info/warning/error)."""
+    return logging.getLogger(f"protox.{name}")
+
+
+def fmt_obj(value: Any, limit: int = 2000) -> str:
+    """Length-capped repr for printing objects in log lines — never raises."""
+    try:
+        text = repr(value)
+    except Exception as exc:  # noqa: BLE001 - logging must not fail
+        text = f"<repr failed: {type(exc).__name__}>"
+    return text if len(text) <= limit else f"{text[:limit]}…(+{len(text) - limit} chars)"
 
 
 def new_call_id() -> str:

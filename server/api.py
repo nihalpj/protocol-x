@@ -13,7 +13,10 @@ import yaml
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from core.logging import fmt_obj, get_logger
 from server.app import VERSION, AppContext
+
+log = get_logger("api")
 
 CONSOLE_DIST = Path(__file__).resolve().parent.parent / "console" / "dist"
 
@@ -245,9 +248,11 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         except Exception:
             return JSONResponse({"state": "error", "message": "invalid JSON body"}, status_code=400)
         package = str(body.get("package", ""))
+        log.info("operator requested install of package %s", package)
         try:
             result = await asyncio.to_thread(install_package, package)
         except InstallError as exc:
+            log.warning("install of %s failed: %s", package, exc)
             return JSONResponse(
                 {"state": "failed", "message": str(exc), "detail": exc.detail},
                 status_code=400,
@@ -276,6 +281,11 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         from agents.codegen import Builder, IntrospectionError
 
         body = await req.json()
+        log.info(
+            "operator requested adapter generation: package=%s functions=%s",
+            body.get("package"), body.get("functions") or [],
+        )
+        log.debug("generate request body: %s", fmt_obj(body))
         try:
             result = Builder(ctx).generate(
                 package=body["package"],
@@ -285,7 +295,9 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                 network=bool(body.get("network", False)),
             )
         except (IntrospectionError, KeyError) as exc:
+            log.warning("generation failed for %s: %s", body.get("package"), exc)
             return JSONResponse({"state": "error", "message": str(exc)}, status_code=400)
+        log.info("generation result for %s: %s", body.get("package"), result.get("state"))
         return JSONResponse(result)
 
     @mcp.custom_route("/api/builder/judge", methods=["POST"])
@@ -293,7 +305,9 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         from agents.codegen import Builder
 
         body = await req.json()
+        log.info("operator requested judge+merge for module %s", body.get("module"))
         result = Builder(ctx).judge_and_merge(str(body["module"]))
+        log.info("judge+merge for %s: %s", body.get("module"), result.state)
         return JSONResponse(
             {
                 "state": result.state,

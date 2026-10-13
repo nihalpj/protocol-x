@@ -16,8 +16,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from adapters.base import SANDBOX_CRASH, SANDBOX_TIMEOUT, ToolError
+from core.logging import get_logger
 from core.sandbox.backends.python_worker import BACKEND as PYTHON_BACKEND
 from core.sandbox.limits import CPU_S, FS_MB, RSS_MB, apply_limits
+
+log = get_logger("sandbox")
 
 _BACKENDS = {"python": PYTHON_BACKEND}
 
@@ -72,6 +75,10 @@ class SubprocessRunner:
         backend = _BACKENDS.get(req.backend)
         if backend is None:
             raise ToolError(SANDBOX_CRASH, f"unknown worker backend: {req.backend}")
+        log.debug(
+            "spawn worker: tool=%s module=%s timeout=%ss rss=%sMB network=%s",
+            req.tool_name, req.adapter_module, req.timeout_s, req.rss_mb, req.network,
+        )
         payload = json.dumps(
             {
                 "adapter_module": req.adapter_module,
@@ -91,18 +98,21 @@ class SubprocessRunner:
                 preexec_fn=lambda: apply_limits(req.cpu_s, req.rss_mb, req.fs_mb),
             )
         except OSError as exc:
+            log.error("failed to spawn worker for %s: %s", req.tool_name, exc)
             raise ToolError(SANDBOX_CRASH, f"failed to spawn worker: {exc}") from exc
         try:
             stdout, _ = proc.communicate(payload, timeout=req.timeout_s)
         except subprocess.TimeoutExpired:
             proc.kill()  # SIGKILL; wall-clock budget (AC-F003-01)
             proc.wait()
+            log.warning("tool %s killed after %ss timeout", req.tool_name, req.timeout_s)
             raise ToolError(
                 SANDBOX_TIMEOUT,
                 f"tool exceeded wall-clock timeout of {req.timeout_s}s",
                 {"timeout_s": req.timeout_s},
             ) from None
         if proc.returncode != 0:
+            log.error("tool %s worker died: exit_code=%s", req.tool_name, proc.returncode)
             raise ToolError(
                 SANDBOX_CRASH,
                 "sandbox worker died (crash or resource limit)",

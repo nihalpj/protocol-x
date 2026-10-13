@@ -73,6 +73,7 @@ class ToolRegistry:
             cached = cache.get(module)
             if cached and cached.get("mtime") == mtime:
                 entries = cached["tools"]
+                log.debug("adapter %s catalog from cache (%d tools)", module, len(entries))
             else:
                 try:
                     specs = self._import_specs(module)
@@ -80,12 +81,15 @@ class ToolRegistry:
                     log.warning("adapter %s failed to load: %s", module, exc)
                     continue
                 entries = [self._entry_from_spec(module, s).__dict__ for s in specs]
+                log.info("adapter %s loaded: %d tools", module, len(entries))
             new_cache[module] = {"mtime": mtime, "tools": entries}
             for entry_dict in entries:
                 entry = CatalogEntry(**entry_dict)
                 self.catalog[entry.name] = entry
         self._write_cache(new_cache)
         self._sync_db_state()
+        log.info("registry catalog assembled: %d tools from %d adapters",
+                 len(self.catalog), len(new_cache))
 
     def _sync_db_state(self) -> None:
         """Persist tool rows; never resurrect a quarantined tool (AC-P1-08)."""
@@ -118,6 +122,8 @@ class ToolRegistry:
         for entry_dict in entries:
             self.catalog[entry_dict["name"]] = CatalogEntry(**entry_dict)
         self._sync_db_state()
+        log.info("adapter %s refreshed: %d tools", module, len(entries))
+        log.debug("adapter %s specs: %s", module, [s.name for s in specs])
 
     # -- lazy loading ------------------------------------------------------
 

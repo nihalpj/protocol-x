@@ -3,15 +3,16 @@
 # preserved: regeneration writes adapters/{{ module_name }}.draft.py instead of
 # overwriting this file (E-7).
 # INV-1: fixed wrappers only — no eval/exec, no free-form code-string params.
+# ruff: noqa: E501  (generated code: machine-length signatures and descriptions)
 from __future__ import annotations
 
-from typing import Any
+{% if import_is_stdlib %}import {{ import_name }}  # introspected installed package, v{{ package_version }}
+{% endif %}from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+{% if not import_is_stdlib %}import {{ import_name }}  # introspected installed package, v{{ package_version }}
+{% endif %}from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
-
-import {{ import_name }}  # introspected installed package, v{{ package_version }}
 
 {% for fn in functions %}
 class {{ fn.model_name }}(BaseModel):

@@ -30,6 +30,9 @@ from pathlib import Path
 from typing import Any
 
 from adapters.base import VALIDATION_ERROR, ToolError
+from core.logging import fmt_obj, get_logger
+
+log = get_logger("repair")
 
 SAME_CLASS_WINDOW_S = 600.0     # 10 min eligibility window
 ELIGIBILITY_THRESHOLD = 2       # same-class failures before a repair attempt
@@ -80,9 +83,17 @@ class RepairAgent:
         self.ctx.audit.record("repair", "repair-agent", {
             "event": "captured", "tool": tool_name,
             "error_class": exc.code, "incident": incident_id})
+        log.info(
+            "captured incident #%d: tool=%s error=%s", incident_id, tool_name, exc.code
+        )
+        log.debug("incident #%d args: %s", incident_id, fmt_obj(args))
         count = self.ctx.store.incidents.count_same_class(
             tool_name, exc.code, SAME_CLASS_WINDOW_S)
         if count >= ELIGIBILITY_THRESHOLD:
+            log.info(
+                "tool %s hit repair threshold (%d same-class failures) — attempting repair",
+                tool_name, count,
+            )
             with self._lock:
                 if tool_name in self._in_flight:
                     return incident_id
@@ -172,6 +183,10 @@ class RepairAgent:
                 ctx.audit.record("repair", "repair-agent", {
                     "event": "healed", "tool": tool, "module": module,
                     "incident": incident_id, "attempts": attempts})
+                log.info(
+                    "repair healed tool %s (module %s, incident #%d, attempt %d)",
+                    tool, module, incident_id, attempts,
+                )
                 return {"state": "healed", "tool": tool}
             failure = f"smoke replay failed: {smoke_error}"
 
@@ -186,6 +201,9 @@ class RepairAgent:
         ctx.audit.record("repair", "repair-agent", {
             "event": "rolled-back", "tool": tool, "module": module,
             "incident": incident_id, "reason": failure})
+        log.warning(
+            "repair rolled back for tool %s (incident #%d): %s", tool, incident_id, failure
+        )
         if self._breaker_tripped(tool):
             return self._quarantine(module, tool, incident_id, attempts)
         return {"state": "rolled-back", "tool": tool, "reason": failure}
@@ -268,6 +286,10 @@ class RepairAgent:
         self.ctx.audit.record("repair", "repair-agent", {
             "event": "quarantined", "module": module, "tool": tool,
             "incident": incident_id})
+        log.error(
+            "module %s quarantined after %d failed repairs (tool %s, incident #%d)",
+            module, attempts, tool, incident_id,
+        )
         return {"state": "quarantined", "module": module}
 
     def reenable(self, tool: str) -> dict[str, Any]:
@@ -275,6 +297,7 @@ class RepairAgent:
         self.ctx.registry.set_state(tool, "live")
         self.ctx.audit.record("repair", "operator", {
             "event": "re-enabled", "tool": tool})
+        log.info("tool %s re-enabled by operator", tool)
         return {"state": "live", "tool": tool}
 
     # ------------------------------------------------------------- helpers

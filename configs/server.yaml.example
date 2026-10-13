@@ -26,6 +26,9 @@ sandbox:
     fs_mb: 100
   default_timeout_s: 30
 
+logging:                      # human-readable app logs (stderr + logs/server.log)
+  level: info                 # debug | info | warning | error | critical
+
 models:                       # Nebius Token Factory (agent inference only; INV-8)
   endpoint: https://api.tokenfactory.nebius.com/v1
   judge: nvidia/Nemotron-3-Ultra-550b-a55b

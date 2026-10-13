@@ -17,6 +17,9 @@ import yaml
 
 from agents.lint import LintFinding, lint_adapter_source
 from agents.tokenfactory import InferenceError, TokenFactoryClient
+from core.logging import fmt_obj, get_logger
+
+log = get_logger("judge")
 
 RUBRIC_PATH = Path(__file__).resolve().parent.parent / "policies" / "inv-rubric-v1.2.yaml"
 
@@ -66,6 +69,10 @@ class Judge:
         hard_blocks = [f for f in lint_findings if f.rule in ("inv-1", "syntax", "contract")]
         if hard_blocks:
             # Deterministic block — no model call needed; nothing can override INV-1.
+            log.warning(
+                "adapter %s blocked by static lint: %s",
+                module_name, [f"{f.rule}:{f.line}" for f in hard_blocks],
+            )
             return JudgeVerdict(
                 verdict="blocked",
                 findings=[f.__dict__ for f in lint_findings],
@@ -76,6 +83,8 @@ class Judge:
             )
 
         prompt = self._build_prompt(adapter_source, module_name, lint_findings)
+        log.info("judging adapter %s with %s (%d chars)", module_name, self.model, len(prompt))
+        log.debug("judge prompt for %s:\n%s", module_name, prompt)
         try:
             completion = self.client.chat(
                 self.model,
@@ -86,12 +95,18 @@ class Judge:
                 max_tokens=16384,  # reasoning models spend budget on reasoning_content
             )
         except InferenceError as exc:
+            log.error("judge unavailable for %s: %s", module_name, exc)
             raise JudgeUnavailable(str(exc)) from exc
+        log.debug("judge raw response for %s: %s", module_name, fmt_obj(completion.content))
         verdict = self._parse_verdict(completion.content)
         verdict.model = completion.model
         verdict.prompt_hash = completion.prompt_hash
         verdict.rubric_version = self.rubric_version
         verdict.ts = time.time()
+        log.info(
+            "judge verdict for %s: %s (%d findings, model=%s)",
+            module_name, verdict.verdict, len(verdict.findings), verdict.model,
+        )
         return verdict
 
     def _build_prompt(self, source: str, module_name: str, lint: list[LintFinding]) -> str:

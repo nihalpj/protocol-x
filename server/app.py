@@ -18,7 +18,7 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from adapters.base import ToolError
 from core.audit import AuditLedger
 from core.db import Store
-from core.logging import JsonlLogger, Metrics, new_call_id
+from core.logging import JsonlLogger, Metrics, fmt_obj, get_logger, new_call_id
 from core.sandbox.runner import CallRequest, SubprocessRunner
 from core.secrets import SecretsBroker
 from core.serialization import normalize_result
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from core.sandbox.pool import PooledRunner
 
 VERSION = "1.0.0"
+
+log = get_logger("app")
 
 
 class AppContext:
@@ -75,6 +77,14 @@ class AppContext:
                 "sizing": self.sizing.to_dict(),
             },
         )
+        log.info(
+            "context ready: preset=%s tools=%d pool=%s workspace=%s",
+            settings.preset_name,
+            len(self.registry.list_tools()),
+            f"{self.runner.max_workers} workers" if hasattr(self.runner, "max_workers") else "off",
+            self.workspace.root,
+        )
+        log.debug("sizing profile: %s", fmt_obj(self.sizing.to_dict()))
 
     def _apply_policy_overrides(self) -> None:
         """F-032: preset per-tool overrides (e.g. strict disables http_*)."""
@@ -91,6 +101,7 @@ class AppContext:
         """Validate -> sandbox -> normalize -> log/metrics. Raises ToolError."""
         call_id = new_call_id()
         start = time.perf_counter()
+        log.debug("dispatch %s call_id=%s args=%s", tool_name, call_id, fmt_obj(args))
         try:
             token = current_token.get()
             self.token_store.check_acl(token, tool_name)
@@ -129,6 +140,8 @@ class AppContext:
                 call_id, tool_name, duration, "ok", result_size=len(str(result))
             )
             self.metrics.observe(tool_name, duration)
+            log.info("tool %s ok in %.1fms (call_id=%s)", tool_name, duration, call_id)
+            log.debug("tool %s result: %s", tool_name, fmt_obj(result))
             return {"tool_call_id": call_id, "tool": tool_name, "result": result}
         except ToolError as exc:
             duration = (time.perf_counter() - start) * 1000
@@ -136,6 +149,9 @@ class AppContext:
                 call_id, tool_name, duration, "error", exit_code=1, error_code=exc.code
             )
             self.metrics.observe(tool_name, duration, exc.code)
+            log.warning(
+                "tool %s failed [%s] in %.1fms: %s", tool_name, exc.code, duration, exc.message
+            )
             with contextlib.suppress(Exception):
                 # repair capture must never break dispatch
                 self.repairer.maybe_capture(tool_name, exc, args)  # F-030

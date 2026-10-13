@@ -44,7 +44,12 @@ def test_generate_static_gate_merge(builder, ctx, tmp_env):
 def test_generated_adapter_passes_static_gate(builder):
     result = builder.generate("json", ["loads"])
     source_path = result["path"]
-    assert static_gate(Path(source_path).read_text()) == []
+    source = Path(source_path).read_text()
+    assert static_gate(source) == []
+    # generated code must stay repo-lint clean (contributing.md: ruff check .)
+    assert "# ruff: noqa: E501" in source  # machine-length signatures/descriptions
+    # stdlib packages import inside the stdlib block, before `from typing`
+    assert source.index("import json") < source.index("from typing import Any")
 
 
 def test_non_literal_defaults_are_skipped(builder):

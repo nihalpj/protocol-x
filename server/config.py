@@ -139,6 +139,17 @@ class Settings:
         # P10 warm worker pool; PROTOX_POOL=0 -> strict spawn-per-call
         self.pool_enabled = env.get("PROTOX_POOL", "1") != "0"
 
+        # Human-readable app logging: PROTOX_LOG_LEVEL / logging.level / --log-level
+        log_cfg = file_cfg.get("logging") or {}
+        self.log_level = (
+            env.get("PROTOX_LOG_LEVEL") or log_cfg.get("level") or "INFO"
+        ).upper()
+        if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+            raise ConfigError(
+                f"invalid log level {self.log_level!r} "
+                "(expected DEBUG, INFO, WARNING, ERROR or CRITICAL)"
+            )
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "protox.db"
@@ -150,6 +161,10 @@ class Settings:
     @property
     def log_jsonl(self) -> Path:
         return self.data_dir / "logs" / "tool-calls.jsonl"
+
+    @property
+    def app_log_path(self) -> Path:
+        return self.data_dir / "logs" / "server.log"
 
     @property
     def agent_features_enabled(self) -> bool:
