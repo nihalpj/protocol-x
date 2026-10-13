@@ -12,6 +12,16 @@ live sandboxed tools without leaving the protocol:
 (sequential; per-package failure isolation), polled via
 `package_convert_status(batch_id=...)`.
 
+Custom wrapper intake (F-039) lets an external GenAI session submit a wrapper
+module it wrote itself, over MCP:
+
+    wrapper_scaffold (contract + example) -> write wrapper -> wrapper_load
+    -> static gate + AI-judge (full governance, fail closed) -> live tools
+
+`wrapper_list` / `wrapper_remove` manage custom-loaded modules; both are
+restricted to modules whose latest version row carries source='custom' so
+built-in and converter-generated adapters can never be removed here.
+
 These are server-layer orchestration tools, NOT sandboxed adapter tools:
 like the REST console, they run in the server process (the converter writes
 adapters/ and calls the judge LLM). Bearer auth at the transport is the
@@ -45,6 +55,70 @@ log = get_logger("operator_tools")
 
 _MAX_FUNCTIONS_IN_RESPONSE = 50
 _RUN_OPEN_TIMEOUT_S = 15
+
+# F-039 custom wrapper intake
+_WRAPPER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MAX_WRAPPER_SOURCE_BYTES = 200 * 1024
+
+_WRAPPER_SCAFFOLD = """\
+Protocol-X custom wrapper contract (F-039)
+==========================================
+
+A wrapper is a Python adapter module. It must expose exactly one of:
+    TOOLS: list[ToolSpec]
+    def get_tools() -> list[ToolSpec]
+
+Hard rules (enforced by the static gate + AI-judge; violations are rejected):
+- INV-1: no eval/exec, no subprocess/os.system, no free-form code-string
+  parameters. Fixed-signature tools with typed Pydantic input models only.
+- Tool names: unique snake_case across the whole catalog; prefix them with
+  your module name (e.g. module "my_text" -> tool "my_text_shout").
+- Declare limits in the input model (Field bounds) AND in ToolSpec.limits;
+  state limits and units in the description.
+- Fail with ToolError(code, message, details) — never let raw exceptions or
+  tracebacks escape the handler.
+- Handlers run inside the sandbox worker; the first argument `ws` is the
+  workspace confinement object: ws.resolve(path, must_exist=...) for input
+  files, ws.new_output_path(name) for outputs, ws.resource_ref(path, mime)
+  to return files. All file paths are workspace-relative — never absolute.
+
+Minimal working example (module "example_text"):
+
+    \"\"\"Example custom wrapper.\"\"\"
+
+    from __future__ import annotations
+
+    from pydantic import BaseModel, ConfigDict, Field
+
+    from adapters.base import ToolSpec
+
+
+    class ShoutIn(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        text: str = Field(max_length=10_000,
+                          description="Text to uppercase (<=10000 chars)")
+
+
+    def shout(ws, text: str) -> dict:
+        return {"text": text.upper()}
+
+
+    TOOLS = [
+        ToolSpec(
+            "example_text_shout",
+            "Uppercase text (<=10000 chars). Output: JSON {'text': str}.",
+            ShoutIn,
+            shout,
+            timeout_s=10,
+            limits={"max_chars": 10_000},
+        ),
+    ]
+
+Submit with wrapper_load(module="example_text", source=<the module source>).
+On an AI-judge pass the tools go live immediately and are reusable by any
+MCP client connected to this server.
+"""
 
 # run_id -> {"state": "running"|"finished"|"error", "exit_code": int|None,
 #            "detail": str} — in-process view complementing the DB row.
@@ -399,6 +473,149 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
             ]
         return result
 
+    async def wrapper_scaffold() -> dict:
+        """Return the custom wrapper contract (F-039): the adapter module
+        rules (INV-1…5), the ToolSpec/handler/workspace conventions, and a
+        minimal working example. Read this BEFORE writing a wrapper so the
+        source passes the static gate and AI-judge on the first submit."""
+        try:
+            _guard(ctx, "wrapper_scaffold")
+        except Exception as exc:
+            raise to_mcp_error(exc) from exc
+        return {"contract": _WRAPPER_SCAFFOLD}
+
+    async def wrapper_load(module: str, source: str,
+                           overwrite: bool = False) -> dict:
+        """Load a custom wrapper module (written outside this server, e.g. by
+        a GenAI assistant) and convert it into live, reusable tools. The full
+        governance gate applies: py_compile + INV-1 lint, then the AI-judge —
+        pass / pass-with-warnings auto-merge (tools hot-registered, callable
+        immediately), blocked never registers, judge unavailable fails closed.
+        `module` is the adapter module name ([a-z][a-z0-9_], <=64 chars); an
+        existing module is never replaced unless overwrite=true. Source is
+        capped at 200 KB. Call wrapper_scaffold first for the contract."""
+        from agents.codegen import Builder
+
+        try:
+            _guard(ctx, "wrapper_load")
+            if not _WRAPPER_NAME_RE.match(module):
+                raise ToolError(
+                    VALIDATION_ERROR,
+                    f"invalid module name {module!r}: must match "
+                    "[a-z][a-z0-9_], max 64 chars")
+            if len(source.encode()) > _MAX_WRAPPER_SOURCE_BYTES:
+                raise ToolError(
+                    VALIDATION_ERROR,
+                    f"source exceeds the {_MAX_WRAPPER_SOURCE_BYTES // 1024} KB "
+                    "wrapper size cap")
+            result = await asyncio.to_thread(
+                Builder(ctx).load_custom_wrapper, module, source, overwrite)
+        except ToolError as exc:
+            raise to_mcp_error(exc) from exc
+        except Exception as exc:
+            raise to_mcp_error(exc) from exc
+        ctx.audit.record("wrapper", "mcp-operator", {
+            "event": "load", "module": module, "overwrite": overwrite,
+            "state": result.state,
+            "verdict": result.verdict.verdict if result.verdict else None,
+            "tools": result.tools,
+        })
+        response: dict[str, Any] = {
+            "state": result.state,
+            "module": module,
+            "tools": result.tools,
+            "diagnostics": result.diagnostics,
+        }
+        if result.verdict is not None:
+            response["verdict"] = result.verdict.verdict
+            response["findings"] = result.verdict.findings
+        if result.state == "merged":
+            response["tools_registered"] = _hot_register(mcp, ctx, module, known)
+        return response
+
+    async def wrapper_list() -> dict:
+        """List custom-loaded wrapper modules (source='custom' — modules
+        submitted via wrapper_load): module name, tool states, and latest
+        version id. Built-in and converter-generated adapters are excluded."""
+        try:
+            _guard(ctx, "wrapper_list")
+        except Exception as exc:
+            raise to_mcp_error(exc) from exc
+        modules = sorted({
+            v["adapter_module"] for v in ctx.store.versions.list()
+            if v["source"] == "custom"
+        })
+        entries = []
+        for module in modules:
+            latest = ctx.store.versions.latest(module)
+            tools = [
+                {"name": e.name, "state": e.state}
+                for e in ctx.registry.list_tools(include_non_live=True)
+                if e.adapter_module == module
+            ]
+            entries.append({
+                "module": module,
+                "tools": tools,
+                "latest_version_id": latest["id"] if latest else None,
+                "file_present": (ctx.registry.adapters_dir / f"{module}.py").exists(),
+            })
+        return {"wrappers": entries}
+
+    async def wrapper_remove(module: str) -> dict:
+        """Remove a custom wrapper module: its tools become quarantined
+        (non-callable), are unloaded from the live MCP instance, and the
+        adapter file is deleted. Restricted to modules loaded via wrapper_load
+        (source='custom') — built-in and generated adapters are refused."""
+        try:
+            _guard(ctx, "wrapper_remove")
+            if not _WRAPPER_NAME_RE.match(module):
+                raise ToolError(
+                    VALIDATION_ERROR, f"invalid module name {module!r}")
+            latest = ctx.store.versions.latest(module)
+            if latest is None or latest["source"] != "custom":
+                raise ToolError(
+                    VALIDATION_ERROR,
+                    f"module {module!r} is not a custom-loaded wrapper; "
+                    "refusing to remove it")
+        except ToolError as exc:
+            raise to_mcp_error(exc) from exc
+        except Exception as exc:
+            raise to_mcp_error(exc) from exc
+        quarantined = [
+            e.name for e in ctx.registry.list_tools(include_non_live=True)
+            if e.adapter_module == module
+        ]
+        for name in quarantined:
+            ctx.registry.set_state(name, "quarantined")
+            ctx.registry.catalog.pop(name, None)
+        # Unload hot-registered tools from the live FastMCP instance so they
+        # disappear from tools/list without a restart (best effort: the
+        # provider API is FastMCP-internal; dispatch is already blocked by
+        # the quarantined registry state regardless).
+        provider = getattr(mcp, "_local_provider", None)
+        remove_tool = getattr(provider, "remove_tool", None)
+        for name in quarantined:
+            if callable(remove_tool):
+                try:
+                    remove_tool(name)
+                except Exception:
+                    log.debug("live unload of %s failed; restart clears it", name)
+            known.discard(name)
+        path = ctx.registry.adapters_dir / f"{module}.py"
+        if path.exists():
+            path.unlink()
+        cache = ctx.registry._read_cache()
+        if cache.pop(module, None) is not None:
+            ctx.registry._write_cache(cache)
+        ctx.audit.record("wrapper", "mcp-operator", {
+            "event": "remove", "module": module, "tools": quarantined,
+        })
+        return {
+            "state": "removed",
+            "module": module,
+            "tools_quarantined": quarantined,
+        }
+
     schemas: dict[str, dict] = {
         "package_install": {
             "type": "object",
@@ -451,6 +668,37 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
                                             "package_convert_bulk"},
             },
         },
+        "wrapper_scaffold": {
+            "type": "object",
+            "properties": {},
+        },
+        "wrapper_load": {
+            "type": "object",
+            "properties": {
+                "module": {"type": "string",
+                           "description": "adapter module name "
+                                          "([a-z][a-z0-9_], <=64 chars)"},
+                "source": {"type": "string",
+                           "description": "full Python source of the wrapper "
+                                          "module (<=200 KB)"},
+                "overwrite": {"type": "boolean",
+                              "description": "replace an existing module "
+                                             "(default false)"},
+            },
+            "required": ["module", "source"],
+        },
+        "wrapper_list": {
+            "type": "object",
+            "properties": {},
+        },
+        "wrapper_remove": {
+            "type": "object",
+            "properties": {
+                "module": {"type": "string",
+                           "description": "custom wrapper module to remove"},
+            },
+            "required": ["module"],
+        },
     }
     for name, fn in (
         ("package_install", package_install),
@@ -458,6 +706,10 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
         ("package_convert", package_convert),
         ("package_convert_bulk", package_convert_bulk),
         ("package_convert_status", package_convert_status),
+        ("wrapper_scaffold", wrapper_scaffold),
+        ("wrapper_load", wrapper_load),
+        ("wrapper_list", wrapper_list),
+        ("wrapper_remove", wrapper_remove),
     ):
         mcp.add_tool(FunctionTool(
             name=name,

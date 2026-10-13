@@ -18,7 +18,8 @@ from core.db import AuditRepo
 
 log = logging.getLogger("protox.audit")
 
-_KINDS = ("verdict", "merge", "repair", "quarantine", "config", "install", "rejection")
+_KINDS = ("verdict", "merge", "repair", "quarantine", "config", "install",
+          "rejection", "wrapper")
 
 
 class AuditLedger:

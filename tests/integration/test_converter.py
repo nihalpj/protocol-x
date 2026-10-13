@@ -15,8 +15,10 @@ import pytest
 
 from agents.converter_agent import (
     MAX_TOOLS,
+    Arg,
     ConversionRejected,
     ConverterAgent,
+    ToolProposal,
     production_merger,
 )
 from server.convert_cli import run_convert
@@ -82,10 +84,10 @@ def test_judge_exhaustion_rejects_after_three_cycles(workdir):
     assert agent.judge_cycles == 3
 
 
-def test_tool_surface_capped_at_ten(workdir):
+def test_tool_surface_capped_at_max(workdir):
     mod = types.ModuleType("fakepkg")
     src = "\n".join(
-        f"def f{i}(x: str) -> str:\n    return x" for i in range(15))
+        f"def f{i}(x: str) -> str:\n    return x" for i in range(MAX_TOOLS + 10))
     exec(src, mod.__dict__)
     agent = ConverterAgent("fakepkg", workdir=workdir)
     proposals = agent._propose(mod)
@@ -146,6 +148,68 @@ def test_dict_annotation_maps_to_object_schema(workdir):
     props = schemas[0]["input_schema"]["properties"]
     assert props["fields"] == {"type": "object"}
     assert props["note"] == {"type": ["string", "null"]}
+
+
+def test_usage_ranking_prefers_public_api(workdir):
+    """__all__ members (the declared public API = the most-used functions)
+    rank ahead of undocumented internals regardless of alphabet."""
+    mod = types.ModuleType("fakepkg")
+    exec("def aaa_internal(x: str) -> str:\n    return x\n"
+         "def zzz_public(x: str) -> str:\n    '''Documented public helper.'''\n    return x",
+         mod.__dict__)
+    mod.__all__ = ["zzz_public"]
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(mod)
+    assert proposals[0].target == "zzz_public"
+
+
+def test_proposer_selects_surface_when_configured(workdir):
+    """With a proposer seam configured, its top-50 selection wins over the
+    heuristic surface (it picks the most-used functions, not the first
+    introspected ones)."""
+    picked = [ToolProposal(tool_name="fakepkg_chosen", target="wrap",
+                           description="chosen by the proposer")]
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        proposer=lambda mod: picked, workdir=workdir)
+    result = agent.run()
+    assert result.tools == ["fakepkg_chosen"]
+
+
+def test_heuristic_fallback_when_proposer_empty(workdir):
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        proposer=lambda mod: [], workdir=workdir)
+    result = agent.run()
+    assert result.tools  # usage-ranked heuristic surface took over
+
+
+def test_static_gate_drops_only_offending_tool(workdir):
+    """A tool whose param trips the INV-1 lint (e.g. yarl's query_string) is
+    dropped surgically — the rest of the surface still merges."""
+    agent = ConverterAgent("textwrap", workdir=workdir)
+    proposals = [
+        ToolProposal(tool_name="textwrap_wrap", target="wrap",
+                     description="wrap text",
+                     args=[Arg("text", "str", "text argument")]),
+        ToolProposal(tool_name="textwrap_run_query", target="wrap",
+                     description="runs a query string",
+                     args=[Arg("query_string", "str", "query_string argument")]),
+    ]
+    path = agent._codegen_adapter(proposals)
+    assert [p.tool_name for p in proposals] == ["textwrap_wrap"]
+    assert "query_string" not in path.read_text()
+
+
+def test_static_gate_rejects_when_nothing_survives(workdir):
+    agent = ConverterAgent("textwrap", workdir=workdir)
+    proposals = [
+        ToolProposal(tool_name="textwrap_run_query", target="wrap",
+                     description="runs a query string",
+                     args=[Arg("query_string", "str", "query_string argument")]),
+    ]
+    with pytest.raises(ConversionRejected, match="not-convertible"):
+        agent._codegen_adapter(proposals)
 
 
 def test_restart_resume_from_db_checkpoint(ctx, workdir):

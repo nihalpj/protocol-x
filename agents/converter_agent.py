@@ -15,9 +15,13 @@ and a machine-readable `rejection.json` for the audit ledger (INV-6).
 Nothing ever waits on a human.
 
 Pipeline:
-  1. introspects the installed package (inspect — never PyPI guesses),
-  2. proposes a focused tool surface (<= MAX_TOOLS, E-12); if the
-     heuristic surface is empty, the LLM proposer takes over automatically,
+  1. introspects the installed package (inspect — never PyPI guesses):
+     top-level members, re-exports, and a bounded submodule scan for
+     pure-namespace packages,
+  2. proposes a focused tool surface (<= MAX_TOOLS) — the package's
+     TOP-50 MOST-USED functions: the LLM proposer picks them when a Token
+     Factory key is configured; otherwise a usage-ranked heuristic
+     (__all__ public API first, then documented, non-deprecated),
   3. codegens the adapter via `templates/adapter.py.jinja`,
   4. renders the agent-facing tool-call format via
      `templates/tool_call_format.jinja` and runs a bounded AUTO-FIX loop
@@ -62,6 +66,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import inspect
+import itertools
 import json
 import pkgutil
 import py_compile
@@ -105,8 +110,9 @@ log = get_logger("converter")
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
 MAX_JUDGE_CYCLES = 3    # circuit breaker: blocked-verdict repair loop (E-10)
-MAX_TOOLS = 10          # tool-surface proposal cap (E-12)
+MAX_TOOLS = 50          # tool-surface proposal cap (top-50 most-used functions)
 MAX_SUBMODULES = 20     # submodule scan cap for pure-namespace packages
+MAX_CANDIDATES = 200    # introspection cap before usage ranking
 RUBRIC_VERSION = "inv-rubric v1.2"
 
 # Nebius × NVIDIA Hackathon: all agent inference via Nebius Token Factory (PRD v1.6).
@@ -178,6 +184,27 @@ def _resolve(mod, target: str):
     for part in target.split("."):
         obj = getattr(obj, part)
     return obj
+
+
+def _usage_score(mod, target: str, fn) -> tuple:
+    """Rank a candidate by likely real-world usage (higher sorts first).
+
+    The package's __all__ (its declared public API) is the strongest signal,
+    then having documentation, then not being deprecated. Ties keep the
+    alphabetical order inspect.getmembers returns (stable sort)."""
+    base = target.rsplit(".", 1)[-1]
+    public = base in (getattr(mod, "__all__", None) or ())
+    doc = inspect.getdoc(fn)
+    deprecated = bool(doc) and "deprecat" in doc.lower()
+    return (public, bool(doc), not deprecated)
+
+
+def _ranked_targets(mod, cap: int = MAX_CANDIDATES) -> list:
+    """Introspected (target, callable) pairs, usage-ranked — the 'top uses of
+    the package' ordering the tool surface is selected from."""
+    candidates = list(itertools.islice(_iter_targets(mod), cap))
+    return sorted(candidates,
+                  key=lambda t: _usage_score(mod, t[0], t[1]), reverse=True)
 
 
 def _static_gate(source: str) -> list[str]:
@@ -307,19 +334,22 @@ class ConverterAgent:
                 lambda: importlib.import_module(self.package))
             self._checkpoint("imported")
 
-            proposals = self.tracer.act(
-                "propose a focused tool surface — fixed-signature wrappers only (INV-1)",
-                f"inspect top-level + re-exported functions (submodule scan fallback), "
-                f"honest types, cap {MAX_TOOLS} (E-12)",
-                lambda: self._propose(mod))
-            if not proposals and self.proposer:
+            proposals: list[ToolProposal] = []
+            if self.proposer:
                 proposals = self.tracer.act(
-                    "heuristic surface empty — best approach available: LLM proposal fallback (automatic)",
+                    "select the package's top-50 most-used functions for the tool surface",
                     f"proposer({self.package}) via {JUDGE_MODEL} @ Token Factory",
                     lambda: self.proposer(mod))
             if not proposals:
+                proposals = self.tracer.act(
+                    "propose a focused tool surface — fixed-signature wrappers only (INV-1)",
+                    f"usage-ranked heuristic (public API first), honest types, "
+                    f"cap {MAX_TOOLS} (E-12)",
+                    lambda: self._propose(mod))
+            if not proposals:
                 self._reject("not-convertible",
-                             "no wrappable functions found by heuristic introspection or LLM proposal")
+                             "no wrappable functions found by LLM proposal or "
+                             "usage-ranked introspection")
             log.info("converter: %d tool proposals for %s", len(proposals), self.package)
             log.debug("proposals: %s", fmt_obj([p.tool_name for p in proposals]))
             self._save_proposals(proposals)
@@ -356,9 +386,12 @@ class ConverterAgent:
 
     # ------------------------------------------------------- step: propose
     def _propose(self, mod) -> list[ToolProposal]:
+        """Usage-ranked heuristic surface: the top MAX_TOOLS most-used
+        functions of the package (public API first), projected to fixed
+        signatures."""
         prefix = self._mod_name()[:12]
         out: list[ToolProposal] = []
-        for target, fn in _iter_targets(mod):
+        for target, fn in _ranked_targets(mod):
             projected = self._simple_args(fn)
             if projected is None:
                 continue
@@ -429,26 +462,72 @@ class ConverterAgent:
 
     # ------------------------------------------------------- step: codegen
     def _codegen_adapter(self, proposals: list[ToolProposal]) -> Path:
-        tpl = self.env.get_template("adapter.py.jinja")
-        code = tpl.render(
-            rubric_version=RUBRIC_VERSION,
-            module_name=self._mod_name(),
-            import_name=self.package,
-            package_version=self._version(),
-            functions=proposals,
-            submodule_imports=sorted(
-                {p.target.split(".", 1)[0] for p in proposals if "." in p.target}),
-            timeout_s=self.timeout_s,
-            network=self.network,
-            agent_name=f"{self.package}-agent",
-        )
         path = self.workdir / f"{self._mod_name()}.py"
-        path.write_text(code)
-        problems = _static_gate(code)  # py_compile + INV-1 lint + contract (E-4)
-        if problems:
-            self._reject("codegen-static-gate",
-                         "generated adapter failed the static gate", problems)
-        return path
+        problems: list[str] = []
+        for _ in range(MAX_FIX_CYCLES + 1):
+            tpl = self.env.get_template("adapter.py.jinja")
+            code = tpl.render(
+                rubric_version=RUBRIC_VERSION,
+                module_name=self._mod_name(),
+                import_name=self.package,
+                package_version=self._version(),
+                functions=proposals,
+                submodule_imports=sorted(
+                    {p.target.split(".", 1)[0] for p in proposals if "." in p.target}),
+                timeout_s=self.timeout_s,
+                network=self.network,
+                agent_name=f"{self.package}-agent",
+            )
+            problems = _static_gate(code)  # py_compile + INV-1 lint + contract (E-4)
+            if not problems:
+                path.write_text(code)
+                return path
+            offenders = self._gate_offenders(code, problems, proposals)
+            if not offenders or not proposals:
+                break                        # not attributable to tools: reject
+            self.tracer.record(
+                f"codegen static gate: {'; '.join(problems)}",
+                f"drop offending tools {sorted(offenders)}, regenerate "
+                f"(bounded surgical fix, <= {MAX_FIX_CYCLES})",
+                "regenerating without offenders", kind="fix")
+            proposals[:] = [p for p in proposals if p.tool_name not in offenders]
+            if not proposals:
+                self._reject("not-convertible",
+                             "static gate dropped every proposed tool", problems)
+        self._reject("codegen-static-gate",
+                     "generated adapter failed the static gate", problems)
+
+    @staticmethod
+    def _gate_offenders(code: str, problems: list[str],
+                        proposals: list[ToolProposal]) -> set[str]:
+        """Map 'line N [...]' gate findings to the tools whose generated block
+        contains them. Returns an empty set when any finding cannot be
+        attributed (e.g. py_compile errors) — no surgical drop then."""
+        lines = code.splitlines()
+        starts: list[tuple[int, str]] = []
+        for p in proposals:
+            idxs = [i for i, line in enumerate(lines, 1)
+                    if line.startswith(f"class {p.model_name}(")
+                    or line.startswith(f"def {p.tool_name}(")]
+            if idxs:
+                starts.append((min(idxs), p.tool_name))
+        starts.sort()
+        offenders: set[str] = set()
+        for prob in problems:
+            m = re.match(r"line (\d+)[ :]", prob)
+            if not m:
+                return set()
+            ln = int(m.group(1))
+            owner = None
+            for start, name in starts:
+                if start <= ln:
+                    owner = name
+                else:
+                    break
+            if owner is None:
+                return set()
+            offenders.add(owner)
+        return offenders
 
     # ------------------------------------- step: tool-call format + AUTO-FIX
     def _schemas(self, proposals: list[ToolProposal]) -> list[dict]:
@@ -804,7 +883,8 @@ def llm_repairer(settings):
 
 
 def llm_proposer(settings):
-    """LLM proposal fallback (fast model) for zero-surface packages.
+    """LLM surface selector (fast model): picks the package's top-50
+    most-used functions from the introspected candidates.
 
     The model picks from functions introspected on the installed package —
     top-level members, re-exports, and (for pure-namespace packages)
@@ -818,12 +898,13 @@ def llm_proposer(settings):
                                 timeout_s=settings.tf_timeout_s)
 
     def propose(mod) -> list[ToolProposal]:
-        candidates = [target for target, _ in _iter_targets(mod)][:50]
+        candidates = [target for target, _ in _ranked_targets(mod)][:100]
         if not candidates:
             return []
         prompt = (
             f"Package '{mod.__name__}' exposes: {', '.join(candidates)}.\n"
-            f"Pick up to {MAX_TOOLS} functions worth exposing as sandboxed MCP tools. "
+            f"Pick the {MAX_TOOLS} MOST COMMONLY USED functions in real-world "
+            "code, worth exposing as sandboxed MCP tools. "
             "Respond with ONLY a JSON array: "
             '[{"target": "<function>", "description": "<one line, no quotes>"}]'
         )
@@ -915,13 +996,13 @@ def _demo_repairer(mode: str):
 
 
 def _demo_proposer(mode: str):
-    """Demo LLM proposal fallback: same broadened surface as the heuristic
-    (top-level, re-exports, submodule scan) — stands in for the LLM pick."""
+    """Demo LLM proposal fallback: usage-ranked top-50 surface (public API
+    first) — stands in for the LLM 'most commonly used' pick."""
     if mode == "llm-demo":
         def propose(mod) -> list[ToolProposal]:
             prefix = re.sub(r"[^a-z0-9]+", "_", mod.__name__.lower()).strip("_")[:12]
             out: list[ToolProposal] = []
-            for target, fn in _iter_targets(mod):
+            for target, fn in _ranked_targets(mod):
                 projected = ConverterAgent._simple_args(fn)
                 if projected is None:
                     continue

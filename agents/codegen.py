@@ -348,8 +348,12 @@ class Builder:
         for fn in functions:
             self.ctx.store.tools.upsert(fn["tool_name"], "draft", module_name)
 
-    def judge_and_merge(self, module_name: str) -> MergeResult:
-        """Judge the generated file; auto-merge on pass / pass-with-warnings."""
+    def judge_and_merge(self, module_name: str, provenance: str = "generated") -> MergeResult:
+        """Judge the generated file; auto-merge on pass / pass-with-warnings.
+
+        `provenance` is the adapter_versions source label recorded for the
+        merged version ("generated" by the converter/builder, "custom" for
+        F-039 wrapper intake)."""
         path = self.ctx.registry.adapters_dir / f"{module_name}.py"
         if not path.exists():
             return MergeResult(state="generation-failed", diagnostics=[f"no adapter file {path}"])
@@ -383,7 +387,7 @@ class Builder:
             return MergeResult(state="blocked", verdict=verdict)
 
         # pass / pass-with-warnings -> auto-merge (UF-01 step 10a/10b)
-        version_id = self._record_generated_version(module_name)
+        version_id = self._record_generated_version(module_name, provenance)
         try:
             self.ctx.registry.refresh_module(module_name)
         except Exception as exc:
@@ -406,13 +410,13 @@ class Builder:
         )
         return MergeResult(state="merged", verdict=verdict, tools=tools)
 
-    def _record_generated_version(self, module_name: str) -> int:
+    def _record_generated_version(self, module_name: str, provenance: str = "generated") -> int:
         from core.hashing import module_source_hash
 
         digest = module_source_hash(self.ctx.registry.adapters_dir, module_name)
         parent = self.ctx.store.versions.latest(module_name)
         version_id: int = self.ctx.store.versions.add(
-            module_name, digest, "generated", parent_id=parent["id"] if parent else None
+            module_name, digest, provenance, parent_id=parent["id"] if parent else None
         )
         return version_id
 
@@ -429,3 +433,28 @@ class Builder:
         parent = self.ctx.store.versions.latest(module_name)
         self.ctx.store.versions.add(module_name, digest, "manual", parent_id=parent["id"] if parent else None)
         return self.judge_and_merge(module_name)
+
+    def load_custom_wrapper(
+        self, module_name: str, source: str, overwrite: bool = False
+    ) -> MergeResult:
+        """F-039 intake: a wrapper module written by an external GenAI session
+        and submitted over MCP (wrapper_load operator tool). Same full gate as
+        generated adapters — static gate, then judge_and_merge; blocked never
+        registers and a judge outage fails closed. Existing modules are never
+        clobbered unless overwrite=True (E-7 spirit)."""
+        problems = static_gate(source)
+        if problems:
+            return MergeResult(state="generation-failed", diagnostics=problems)
+        path = self.ctx.registry.adapters_dir / f"{module_name}.py"
+        if path.exists() and not overwrite:
+            return MergeResult(
+                state="generation-failed",
+                diagnostics=[f"module '{module_name}' already exists; pass overwrite=true to replace it"],
+            )
+        path.write_text(source)
+        from core.hashing import module_source_hash
+
+        digest = module_source_hash(self.ctx.registry.adapters_dir, module_name)
+        parent = self.ctx.store.versions.latest(module_name)
+        self.ctx.store.versions.add(module_name, digest, "custom", parent_id=parent["id"] if parent else None)
+        return self.judge_and_merge(module_name, provenance="custom")
