@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
-# start.sh — start the server (HTTP transport + console) in the background.
+# start.sh — start the server.
+#   ./start [http]   HTTP transport + console, backgrounded (default)
+#   ./start stdio    stdio transport for MCP clients, foreground (exec)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+TRANSPORT="${1:-http}"
+case "$TRANSPORT" in
+  http|stdio) ;;
+  -h|--help)
+    echo "usage: $0 [http|stdio]   (default: http)"
+    exit 0
+    ;;
+  *)
+    echo "unknown transport: $TRANSPORT (expected 'http' or 'stdio')" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$TRANSPORT" == "stdio" ]]; then
+  # stdio is a foreground protocol channel — the MCP client owns the process.
+  exec uv run protocol-x-tool-mcp serve --transport stdio
+fi
 
 DATA_DIR="${PROTOX_DATA_DIR:-$HOME/.local/share/protocol-x}"
 HOST="${PROTOX_HOST:-127.0.0.1}"

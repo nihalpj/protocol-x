@@ -90,7 +90,8 @@ Operator scripts (`scripts/`, bash, no sudo):
 ```bash
 ./scripts/install.sh        # bootstrap uv if missing + uv sync
 ./scripts/doctor.sh [--quick]   # full or pre-flight diagnostics (exit 1 on red)
-./scripts/start.sh          # HTTP server in the background (pid file under data_dir)
+./scripts/start.sh          # HTTP server in the background (pid file under data_dir); prints bearer token + console URL
+./scripts/start.sh stdio    # stdio transport in the foreground (for MCP clients)
 ./scripts/status.sh         # pid + /health probe
 ./scripts/stop.sh           # stop the background server
 ```
