@@ -104,7 +104,7 @@ def compute_profile(
 
     overrides: dict[str, str] = {}
     if cpus_override:
-        cpus = float(cpus_override)
+        cpus = int(float(cpus_override))
         overrides["PROTOX_CPUS"] = cpus_override
     if memory_override:
         memory = _parse_memory_mb(memory_override)

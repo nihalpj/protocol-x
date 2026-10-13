@@ -284,9 +284,10 @@ class Builder:
 
         digest = module_source_hash(self.ctx.registry.adapters_dir, module_name)
         parent = self.ctx.store.versions.latest(module_name)
-        return self.ctx.store.versions.add(
+        version_id: int = self.ctx.store.versions.add(
             module_name, digest, "generated", parent_id=parent["id"] if parent else None
         )
+        return version_id
 
     def save_manual_edit(self, module_name: str, source: str) -> MergeResult:
         """In-console edit: mark manual, re-judge mandatory (UF-01 step 11)."""

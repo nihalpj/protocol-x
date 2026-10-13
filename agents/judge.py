@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -48,7 +48,7 @@ class JudgeUnavailable(Exception):
 
 
 def load_rubric(path: Path = RUBRIC_PATH) -> dict:
-    return yaml.safe_load(path.read_text())
+    return cast(dict, yaml.safe_load(path.read_text()))
 
 
 class Judge:

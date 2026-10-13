@@ -137,7 +137,7 @@ def _resolve_ips(host: str) -> list[str]:
             f"DNS resolution failed for {host!r} ({type(exc).__name__})",
             {"host": host, "exception": type(exc).__name__},
         ) from exc
-    ips = sorted({info[4][0] for info in infos})
+    ips = sorted({str(info[4][0]) for info in infos})
     if not ips:
         raise ToolError(ADAPTER_ERROR, f"DNS resolution returned no addresses for {host!r}", {"host": host})
     return ips
@@ -163,9 +163,12 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         sock = socket.create_connection((self.host, self.port), self.timeout)
-        if self._tunnel_host:
-            self._tunnel()
-        self.sock = self._context.wrap_socket(sock, server_hostname=self._pinned_host)
+        # _tunnel_host/_tunnel/_context are private http.client.HTTPSConnection
+        # attributes used by the superclass proxy path but missing from the
+        # typeshed stubs; this mirrors http.client.HTTPConnection.connect().
+        if self._tunnel_host:  # type: ignore[attr-defined]
+            self._tunnel()  # type: ignore[attr-defined]
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._pinned_host)  # type: ignore[attr-defined]
 
 
 def _connect(target: _Target, timeout_s: float) -> http.client.HTTPConnection:

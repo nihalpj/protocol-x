@@ -51,10 +51,11 @@ def _target(ws, in_place: bool, out_path: str | None, source: Path, suggested: s
     if in_place:
         return source
     if out_path:
-        target = ws.resolve(out_path)
+        target: Path = ws.resolve(out_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
-    return ws.new_output_path(suggested)
+    new_path: Path = ws.new_output_path(suggested)
+    return new_path
 
 
 def _all_paragraphs(doc):

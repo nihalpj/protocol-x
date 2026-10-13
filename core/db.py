@@ -130,6 +130,7 @@ class VersionRepo:
                VALUES (?, ?, ?, ?, ?)""",
             (adapter_module, version_hash, source, parent_id, _now()),
         )
+        assert cur.lastrowid is not None
         return int(cur.lastrowid)
 
     def latest(self, adapter_module: str) -> dict | None:
@@ -169,6 +170,7 @@ class AuditRepo:
             "INSERT INTO audit_events(ts, kind, actor, payload_json) VALUES (?, ?, ?, ?)",
             (ts if ts is not None else _now(), kind, actor, json.dumps(payload, default=str)),
         )
+        assert cur.lastrowid is not None
         return int(cur.lastrowid)
 
     def query(
@@ -178,7 +180,8 @@ class AuditRepo:
         until: float | None = None,
         limit: int = 500,
     ) -> list[dict]:
-        sql, params = "SELECT * FROM audit_events WHERE 1=1", []
+        sql = "SELECT * FROM audit_events WHERE 1=1"
+        params: list[Any] = []
         if kind:
             sql += " AND kind=?"
             params.append(kind)
@@ -208,6 +211,7 @@ class RunRepo:
             "INSERT INTO conversion_runs(package, workdir, trace_path, started_ts) VALUES (?, ?, ?, ?)",
             (package, workdir, trace_path, _now()),
         )
+        assert cur.lastrowid is not None
         return int(cur.lastrowid)
 
     def close(
@@ -238,7 +242,8 @@ class RunRepo:
         package: str | None = None,
         limit: int = 200,
     ) -> list[dict]:
-        sql, params = "SELECT * FROM conversion_runs WHERE 1=1", []
+        sql = "SELECT * FROM conversion_runs WHERE 1=1"
+        params: list[Any] = []
         if outcome:
             sql += " AND outcome=?"
             params.append(outcome)
@@ -280,6 +285,7 @@ class IncidentRepo:
             " attempts, state, window_start_ts) VALUES (?, ?, ?, ?, 0, ?, ?)",
             (tool, error_class, input_json, adapter_version_id, state, _now()),
         )
+        assert cur.lastrowid is not None
         return int(cur.lastrowid)
 
     def get(self, incident_id: int) -> dict | None:
@@ -322,7 +328,8 @@ class IncidentRepo:
         return int(row[0])
 
     def list(self, tool: str | None = None, state: str | None = None, limit: int = 200) -> list[dict]:
-        sql, params = "SELECT * FROM repair_incidents WHERE 1=1", []
+        sql = "SELECT * FROM repair_incidents WHERE 1=1"
+        params: list[Any] = []
         if tool:
             sql += " AND tool=?"
             params.append(tool)

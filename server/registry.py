@@ -18,7 +18,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from adapters.base import ADAPTER_ATTRS, TOOL_DISABLED, UNKNOWN_TOOL, ToolError, ToolSpec
 from core.db import Store
@@ -189,7 +189,7 @@ class ToolRegistry:
 
     def _read_cache(self) -> dict[str, Any]:
         try:
-            return json.loads(self.cache_path.read_text())
+            return cast(dict[str, Any], json.loads(self.cache_path.read_text()))
         except (OSError, json.JSONDecodeError):
             return {}
 

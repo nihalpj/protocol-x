@@ -85,8 +85,9 @@ class PooledRunner:
             self._buckets.clear()
             self._cond.notify_all()
         for w in workers:
-            with _suppress_all():
-                w.proc.stdin.close()
+            if w.proc.stdin is not None:
+                with _suppress_all():
+                    w.proc.stdin.close()
             with _suppress_all():
                 w.proc.terminate()
                 w.proc.wait(timeout=2)
@@ -157,15 +158,17 @@ class PooledRunner:
                 "extra_env": req.extra_env,
             }
         ).encode() + b"\n"
+        stdin, stdout = worker.proc.stdin, worker.proc.stdout
+        assert stdin is not None and stdout is not None
         try:
-            worker.proc.stdin.write(payload)
-            worker.proc.stdin.flush()
+            stdin.write(payload)
+            stdin.flush()
         except (BrokenPipeError, OSError) as exc:
             raise ToolError(
                 SANDBOX_CRASH, "pool worker died before the call",
                 {"exit_code": worker.proc.poll()}) from exc
 
-        ready, _, _ = select.select([worker.proc.stdout], [], [], req.timeout_s)
+        ready, _, _ = select.select([stdout], [], [], req.timeout_s)
         if not ready:
             worker.proc.kill()  # wall-clock budget (AC-F003-01)
             worker.proc.wait()
@@ -174,7 +177,7 @@ class PooledRunner:
                 f"tool exceeded wall-clock timeout of {req.timeout_s}s",
                 {"timeout_s": req.timeout_s},
             )
-        line = worker.proc.stdout.readline()
+        line = stdout.readline()
         worker.calls += 1
         if not line:
             raise ToolError(

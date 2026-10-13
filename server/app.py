@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 from fastmcp.tools.function_tool import FunctionTool
@@ -30,6 +30,9 @@ from server.errors import to_mcp_error
 from server.ratelimit import RateLimiter
 from server.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from core.sandbox.pool import PooledRunner
+
 VERSION = "1.0.0"
 
 
@@ -46,6 +49,7 @@ class AppContext:
         self.workspace = Workspace(settings.workspace_root)
         # F-038: compute the host-derived profile once; print + audit-log it.
         self.sizing: SizingProfile = profile_for_settings(settings)
+        self.runner: SubprocessRunner | PooledRunner
         if settings.pool_enabled:
             from core.sandbox.pool import PooledRunner
 

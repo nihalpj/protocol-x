@@ -54,7 +54,7 @@ class RepairAgent:
 
     @property
     def _versions_dir(self) -> Path:
-        path = self.ctx.settings.data_dir / "versions"
+        path: Path = self.ctx.settings.data_dir / "versions"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -74,7 +74,7 @@ class RepairAgent:
         version = self.ctx.store.versions.latest(module)
         if not version or version["source"] not in ("generated", "manual"):
             return None  # built-in launch-core adapters never self-modify
-        incident_id = self.ctx.store.incidents.add(
+        incident_id: int = self.ctx.store.incidents.add(
             tool_name, exc.code,
             json.dumps(args, default=str)[:4000], version["id"])
         self.ctx.audit.record("repair", "repair-agent", {
@@ -255,11 +255,9 @@ class RepairAgent:
             and e["payload"].get("tool") == tool
         ]
         since_ts = max(reenabled) if reenabled else None
-        return (
-            self.ctx.store.incidents.count_failed_repairs(
-                tool, BREAKER_WINDOW_S, since_ts=since_ts)
-            >= BREAKER_MAX_FAILED
-        )
+        failed_repairs: int = self.ctx.store.incidents.count_failed_repairs(
+            tool, BREAKER_WINDOW_S, since_ts=since_ts)
+        return failed_repairs >= BREAKER_MAX_FAILED
 
     def _quarantine(self, module: str, tool: str, incident_id: int,
                     attempts: int) -> dict[str, Any]:

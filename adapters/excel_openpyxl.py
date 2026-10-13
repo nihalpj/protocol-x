@@ -16,7 +16,7 @@ import builtins
 import sys
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,7 +46,10 @@ def _block_numpy_in_sandbox() -> None:
         except (OSError, ValueError):
             return
         if soft == 0:
-            sys.modules["numpy"] = None
+            # A None sys.modules entry makes `import numpy` raise ImportError,
+            # which openpyxl takes as its documented no-numpy fallback path.
+            modules: dict[str, Any] = sys.modules
+            modules["numpy"] = None
 
 
 _block_numpy_in_sandbox()
@@ -100,7 +103,7 @@ def _parse_range(range_str: str) -> tuple[int, int, int, int]:
     from openpyxl.utils import range_boundaries
 
     try:
-        return range_boundaries(range_str)
+        return cast(tuple[int, int, int, int], range_boundaries(range_str))
     except Exception as exc:
         raise ToolError(
             VALIDATION_ERROR,
@@ -114,7 +117,7 @@ def _parse_cell(cell: str) -> tuple[int, int]:
     from openpyxl.utils.cell import coordinate_to_tuple
 
     try:
-        return coordinate_to_tuple(cell)
+        return cast(tuple[int, int], coordinate_to_tuple(cell))
     except Exception as exc:
         raise ToolError(
             VALIDATION_ERROR,

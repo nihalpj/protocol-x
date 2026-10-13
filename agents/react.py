@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 FIRST_LABEL = {"step": "THOUGHT", "fix": "AUTO-FIX"}
 
@@ -84,7 +84,7 @@ class ReActTracer:
     def completed_stage(self) -> str | None:
         if self.checkpoint_file and self.checkpoint_file.exists():
             try:
-                return json.loads(self.checkpoint_file.read_text()).get("stage")
+                return cast("str | None", json.loads(self.checkpoint_file.read_text()).get("stage"))
             except (json.JSONDecodeError, OSError):
                 return None
         return None

@@ -115,7 +115,7 @@ def image_resize(ws, path: str, width: int, height: int, out_path: str | None = 
     from PIL import Image
 
     img, _ = _load(ws, path)
-    resized = img.resize((width, height), Image.LANCZOS)
+    resized = img.resize((width, height), Image.Resampling.LANCZOS)
     fmt = img.format or "PNG"
     return _save(ws, resized, out_path, fmt, f"resized-{width}x{height}.{fmt.lower()}")
 

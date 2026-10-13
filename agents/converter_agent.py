@@ -69,7 +69,9 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from pathlib import Path
 
 from jinja2 import FileSystemLoader, select_autoescape
@@ -78,7 +80,7 @@ from jinja2.sandbox import SandboxedEnvironment
 try:
     from agents.react import ReActTracer
 except ImportError:  # direct script execution: python3 agents/converter_agent.py
-    from react import ReActTracer
+    from react import ReActTracer  # type: ignore[no-redef]
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
@@ -99,12 +101,15 @@ _STAGES = ["imported", "proposed", "codegen", "format", "merged"]
 def _static_gate(source: str) -> list[str]:
     """Full static gate (py_compile + INV-1 lint + contract) when the server
     tree is importable; bare py_compile fallback for standalone demo runs."""
+    gate: Callable[[str], list[str]] | None = None
     try:
-        from agents.codegen import static_gate
+        from agents.codegen import static_gate as _imported_gate
+
+        gate = _imported_gate
     except ImportError:
-        static_gate = None
-    if static_gate is not None:
-        return static_gate(source)
+        pass
+    if gate is not None:
+        return gate(source)
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
         fh.write(source)
         tmp = fh.name
@@ -361,12 +366,12 @@ class ConverterAgent:
                              findings)
             applied = self._apply_format_fixes(findings, schemas)
             if not applied and self.repairer:
+                findings_copy: list[str] = list(findings)
                 directive = self.tracer.act(
                     "no deterministic format fix — best-approach LLM repair tier (automatic)",
                     f"repairer({', '.join(findings)}) via {JUDGE_MODEL}",
-                    lambda f=list(findings): self.repairer(
-                        f, list(proposals),
-                        {"stage": "format", "cycle": self.fix_cycles}))
+                    partial(self.repairer, findings_copy, list(proposals),
+                            {"stage": "format", "cycle": self.fix_cycles}))
                 if self._apply_directive(directive, proposals):
                     if not proposals:
                         self._reject("not-convertible",
@@ -434,11 +439,12 @@ class ConverterAgent:
             if cycle < MAX_JUDGE_CYCLES:
                 repaired = self._repair_from_findings(findings, proposals, adapter_path)
                 if not repaired and self.repairer:
+                    findings_copy: list[str] = list(findings)
                     directive = self.tracer.act(
                         "deterministic repairs exhausted — best-approach LLM repair tier (automatic)",
                         f"repairer({'; '.join(findings) or 'blocked'}) via {JUDGE_MODEL}",
-                        lambda f=list(findings), c=cycle: self.repairer(
-                            f, list(proposals), {"stage": "judge", "cycle": c}))
+                        partial(self.repairer, findings_copy, list(proposals),
+                                {"stage": "judge", "cycle": cycle}))
                     repaired = self._apply_directive(directive, proposals)
                     if repaired:
                         if not proposals:
