@@ -159,6 +159,39 @@ export interface GenericHttpSnippet {
   headers: Record<string, string>;
 }
 
+// ---------- agent builder (F-019 / UF-01) ----------
+
+export interface IntrospectFunction {
+  name: string;
+  signature: string;
+  doc: string;
+}
+
+export type IntrospectResult =
+  | { state: "ok"; package: string; functions: IntrospectFunction[] }
+  | { state: "not-installed"; message: string };
+
+export interface GenerateResult {
+  state: string; // generated | generation-failed
+  module?: string;
+  path?: string;
+  tools?: string[];
+  diagnostics?: string[];
+}
+
+export interface JudgeVerdictInfo {
+  verdict: string;
+  findings: string[];
+  model: string;
+}
+
+export interface JudgeResult {
+  state: string; // merged | blocked | judge-unavailable | generation-failed
+  tools: string[];
+  diagnostics: string[];
+  verdict: JudgeVerdictInfo | null;
+}
+
 export interface Snippets {
   claude_desktop: Record<string, unknown>;
   generic_http: GenericHttpSnippet;
@@ -251,6 +284,32 @@ export const api = {
       };
     }
   },
+  introspect: async (pkg: string): Promise<IntrospectResult> => {
+    try {
+      const r = await request<{ package: string; functions: IntrospectFunction[] }>(
+        `/api/introspect/${encodeURIComponent(pkg)}`
+      );
+      return { state: "ok", ...r };
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 400) {
+        return {
+          state: "not-installed",
+          message: messageOf(e.body, `package '${pkg}' is not installed in the server environment`),
+        };
+      }
+      throw e;
+    }
+  },
+  generateAdapter: (pkg: string, functions: string[]) =>
+    request<GenerateResult>("/api/builder/generate", {
+      method: "POST",
+      body: JSON.stringify({ package: pkg, functions }),
+    }),
+  judgeAdapter: (module: string) =>
+    request<JudgeResult>("/api/builder/judge", {
+      method: "POST",
+      body: JSON.stringify({ module }),
+    }),
 };
 
 // ---------- polling hook ----------

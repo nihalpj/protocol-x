@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/api";
+import type { IntrospectFunction, JudgeVerdictInfo } from "@/api";
 import type { PypiOk } from "@/lib/types";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -11,15 +12,26 @@ interface Props {
 
 type Phase = "idle" | "searching" | "ok" | "not-found" | "offline";
 
+type Action =
+  | { kind: "idle" }
+  | { kind: "busy"; label: string }
+  | { kind: "choose"; functions: IntrospectFunction[] }
+  | { kind: "generated"; module: string; path: string; tools: string[] }
+  | { kind: "judged"; state: string; tools: string[]; diagnostics: string[]; verdict: JudgeVerdictInfo | null }
+  | { kind: "failed"; title: string; lines: string[] };
+
 export function AddPackageModal({ onClose, agentEnabled }: Props) {
   const [name, setName] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [pkg, setPkg] = useState<PypiOk | null>(null);
   const [message, setMessage] = useState("");
+  const [action, setAction] = useState<Action>({ kind: "idle" });
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const doSearch = async (q: string) => {
     const query = q.trim();
     if (!query) return;
+    setAction({ kind: "idle" });
     setPhase("searching");
     const r = await api.pypi(query);
     if (r.state === "ok") {
@@ -33,13 +45,92 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
     }
   };
 
-  // codegen/convert land in a later phase — when agent features are off the
-  // buttons stay disabled with a tooltip; when on they explain what's next.
-  const actionDisabled = !agentEnabled;
+  const fail = (title: string, e: unknown) =>
+    setAction({ kind: "failed", title, lines: [e instanceof Error ? e.message : String(e)] });
+
+  // "generate adapter →" — introspect, let the operator pick functions, render a draft.
+  const onGenerate = async () => {
+    if (!pkg) return;
+    setAction({ kind: "busy", label: "introspecting installed package…" });
+    const intro = await api.introspect(pkg.name).catch((e: unknown) => {
+      fail("introspection failed", e);
+      return null;
+    });
+    if (!intro) return;
+    if (intro.state !== "ok") {
+      setAction({ kind: "failed", title: "package not installed on the server", lines: [intro.message] });
+      return;
+    }
+    setSelected(new Set(intro.functions.map((f) => f.name)));
+    setAction({ kind: "choose", functions: intro.functions });
+  };
+
+  const onGenerateSelected = async (functions: string[]) => {
+    if (!pkg || functions.length === 0) return;
+    setAction({ kind: "busy", label: `generating adapter for ${functions.length} function(s)…` });
+    try {
+      const r = await api.generateAdapter(pkg.name, functions);
+      if (r.state === "generated" && r.module) {
+        setAction({ kind: "generated", module: r.module, path: r.path ?? "", tools: r.tools ?? [] });
+        toast.success(`adapter draft written — ${r.tools?.length ?? 0} tool(s), awaiting judge`);
+      } else {
+        setAction({ kind: "failed", title: "static gate rejected the generated adapter", lines: r.diagnostics ?? [] });
+      }
+    } catch (e) {
+      fail("generation failed", e);
+    }
+  };
+
+  const onJudge = async (module: string) => {
+    setAction({ kind: "busy", label: "AI-judge reviewing adapter…" });
+    try {
+      const r = await api.judgeAdapter(module);
+      setAction({ kind: "judged", state: r.state, tools: r.tools, diagnostics: r.diagnostics, verdict: r.verdict });
+      if (r.state === "merged") toast.success(`${r.tools.length} tool(s) merged and live`);
+      else toast.warning(`judge: ${r.state}`);
+    } catch (e) {
+      fail("judge failed", e);
+    }
+  };
+
+  // "convert to tools" — one click: introspect all → generate → judge → merge.
+  const onConvert = async () => {
+    if (!pkg) return;
+    setAction({ kind: "busy", label: "introspecting installed package…" });
+    const intro = await api.introspect(pkg.name).catch((e: unknown) => {
+      fail("introspection failed", e);
+      return null;
+    });
+    if (!intro) return;
+    if (intro.state !== "ok") {
+      setAction({ kind: "failed", title: "package not installed on the server", lines: [intro.message] });
+      return;
+    }
+    setAction({ kind: "busy", label: `generating adapter for ${intro.functions.length} function(s)…` });
+    try {
+      const g = await api.generateAdapter(pkg.name, intro.functions.map((f) => f.name));
+      if (g.state !== "generated" || !g.module) {
+        setAction({ kind: "failed", title: "static gate rejected the generated adapter", lines: g.diagnostics ?? [] });
+        return;
+      }
+      await onJudge(g.module);
+    } catch (e) {
+      fail("conversion failed", e);
+    }
+  };
+
+  const busy = action.kind === "busy";
+  const actionDisabled = !agentEnabled || busy;
   const actionTooltip = agentEnabled
-    ? "codegen & convert actions land in a later phase"
+    ? "generate: draft adapter from selected functions · convert: full pipeline (generate → judge → merge)"
     : "requires a Token Factory key (degraded mode)";
-  const onAction = () => toast.info("codegen & convert actions land in a later phase");
+
+  const toggle = (fn: string) => {
+    const next = new Set(selected);
+    if (next.has(fn)) next.delete(fn);
+    else next.add(fn);
+    setSelected(next);
+  };
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -125,7 +216,7 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
                       <span className="flex-1">
                         <button
                           disabled={actionDisabled}
-                          onClick={onAction}
+                          onClick={() => void onGenerate()}
                           className="w-full rounded-md bg-[#5e6ad2] px-3 py-2 text-[11.5px] font-medium text-white transition-colors hover:bg-[#4f5ac0] disabled:opacity-40"
                         >
                           generate adapter →
@@ -139,7 +230,7 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
                       <span className="flex-1">
                         <button
                           disabled={actionDisabled}
-                          onClick={onAction}
+                          onClick={() => void onConvert()}
                           className="w-full rounded-md border border-[#e4e4e7] bg-white px-3 py-2 text-[11.5px] font-medium text-[#3f3f46] transition-colors hover:bg-[#f4f4f5] disabled:opacity-40"
                         >
                           convert to tools
@@ -154,13 +245,120 @@ export function AddPackageModal({ onClose, agentEnabled }: Props) {
                     degraded mode — add a Token Factory key in Settings to enable package conversion.
                   </div>
                 )}
+
+                {busy && (
+                  <div className="rounded-md border border-[#e4e4e7] bg-[#fafafa] px-3 py-2.5 text-[11px] text-[#52525b]">
+                    <span className="mr-2 inline-block animate-spin">◌</span>
+                    {action.label}
+                  </div>
+                )}
+
+                {action.kind === "choose" && (
+                  <div className="space-y-2 rounded-lg border border-[#e4e4e7] px-3 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#3f3f46]">
+                      {action.functions.length} candidate function(s) — select what becomes a tool
+                    </div>
+                    <div className="max-h-44 space-y-1 overflow-y-auto scroll-thin">
+                      {action.functions.map((f) => (
+                        <label key={f.name} className="flex items-start gap-2 text-[11px] text-[#52525b]">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(f.name)}
+                            onChange={() => toggle(f.name)}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <span className="mono text-[10.5px] font-medium text-[#3f3f46]">
+                              {f.name}
+                              {f.signature}
+                            </span>
+                            {f.doc && <span className="block text-[10px] text-[#a1a1aa]">{f.doc.slice(0, 120)}</span>}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <button
+                      disabled={selected.size === 0}
+                      onClick={() => void onGenerateSelected([...selected])}
+                      className="rounded-md bg-[#5e6ad2] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[#4f5ac0] disabled:opacity-40"
+                    >
+                      generate {selected.size} tool(s) →
+                    </button>
+                  </div>
+                )}
+
+                {action.kind === "generated" && (
+                  <div className="space-y-2 rounded-lg border border-[#bbf7d0] bg-[#f0fdf4] px-3 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#15803d]">
+                      adapter draft written — {action.tools.length} tool(s)
+                    </div>
+                    <div className="mono text-[10px] text-[#52525b]">{action.path}</div>
+                    <div className="mono text-[10px] text-[#52525b]">{action.tools.join(", ")}</div>
+                    <button
+                      onClick={() => void onJudge(action.module)}
+                      className="rounded-md bg-[#15803d] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[#166534]"
+                    >
+                      judge &amp; merge →
+                    </button>
+                  </div>
+                )}
+
+                {action.kind === "judged" && (
+                  <div
+                    className={`space-y-1.5 rounded-lg border px-3 py-2.5 ${
+                      action.state === "merged"
+                        ? "border-[#bbf7d0] bg-[#f0fdf4]"
+                        : "border-[#fecaca] bg-[#fef2f2]"
+                    }`}
+                  >
+                    <div
+                      className={`text-[11px] font-semibold ${
+                        action.state === "merged" ? "text-[#15803d]" : "text-[#b91c1c]"
+                      }`}
+                    >
+                      {action.state === "merged"
+                        ? `merged — ${action.tools.length} tool(s) live in the registry`
+                        : `blocked — ${action.state}`}
+                    </div>
+                    {action.tools.length > 0 && (
+                      <div className="mono text-[10px] text-[#52525b]">{action.tools.join(", ")}</div>
+                    )}
+                    {action.verdict && (
+                      <div className="text-[10px] text-[#71717a]">
+                        judge verdict: {action.verdict.verdict} · {action.verdict.model}
+                      </div>
+                    )}
+                    {(action.verdict?.findings.length || action.diagnostics.length > 0) && (
+                      <ul className="list-inside list-disc space-y-0.5 text-[10px] text-[#71717a]">
+                        {(action.verdict?.findings ?? []).map((f, i) => (
+                          <li key={`f${i}`}>{f}</li>
+                        ))}
+                        {action.diagnostics.map((d, i) => (
+                          <li key={`d${i}`}>{d}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {action.kind === "failed" && (
+                  <div className="space-y-1 rounded-lg border border-[#fecaca] bg-[#fef2f2] px-3 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#b91c1c]">{action.title}</div>
+                    <ul className="list-inside list-disc space-y-0.5 text-[10px] text-[#52525b]">
+                      {action.lines.map((l, i) => (
+                        <li key={i}>{l}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
 
             {phase === "idle" && (
               <div className="text-[10.5px] leading-relaxed text-[#71717a]">
                 The converter introspects the installed package and never guesses from the index — the PyPI
-                lookup here only confirms the package exists and shows its metadata.
+                lookup here only confirms the package exists and shows its metadata. The package must be
+                installed in the server environment.
               </div>
             )}
           </div>
