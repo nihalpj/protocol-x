@@ -1,0 +1,54 @@
+# Feature List
+
+Features as implemented in this repo, mapped to the PRD's F-numbers (see `protocol-x-tool-mcp-prd.md` at the repo root). Every claim below is traceable to code; discrepancies with the PRD are noted.
+
+## Launch-core tool catalog — 34 tools
+
+The PRD's prose says "38 launch-core tools"; the shipped adapters in `adapters/*.py` expose exactly **34** `ToolSpec`s (also what `docs/quickstart.md` states). Each tool is a fixed-signature wrapper validated by a Pydantic input model (`extra="forbid"`), executed in the sandbox, with limits declared in its description and enforced boundary-inclusive.
+
+| Adapter (module) | PRD | Tools |
+|------------------|-----|-------|
+| `adapters/images_pillow.py` | F-007 | `image_info`, `image_resize`, `image_crop`, `image_rotate`, `image_convert_format`, `image_thumbnail`, `image_compress_jpeg`, `image_strip_metadata` (8) |
+| `adapters/http_requests.py` | F-008 | `http_get`, `http_post`, `http_head`, `http_download_file` (4) |
+| `adapters/pdf_pypdf.py` | F-009 | `pdf_info`, `pdf_extract_text`, `pdf_merge`, `pdf_split`, `pdf_rotate_pages`, `pdf_extract_images` (6) |
+| `adapters/data_pandas.py` | F-010 | `csv_info`, `csv_read`, `csv_filter`, `csv_aggregate`, `csv_join`, `csv_describe` (6) |
+| `adapters/excel_openpyxl.py` | F-011 | `xlsx_info`, `xlsx_read_range`, `xlsx_write_range`, `xlsx_create`, `xlsx_add_chart` (5) |
+| `adapters/docs_docx.py` | F-012 | `docx_create`, `docx_append_paragraph`, `docx_extract_text`, `docx_replace_text`, `docx_add_table` (5) |
+
+Limits baked into the adapters: images ≤8192 px per dimension; CSV input ≤200 MB, `csv_read` ≤5000 rows; `pdf_extract_text` ≤50 pages; xlsx ranges ≤10,000 cells; inline HTTP bodies ≤256 KB; downloads abort at 200 MB. `adapters/_test_bombs.py` ships chaos tools (`test_sleeper`, `test_memory_hog`, `test_crasher`) used by the test suite — skipped by registry discovery because the filename starts with `_`.
+
+## Runtime and sandboxing
+
+- **Sandbox runner (F-003)** — `core/sandbox/runner.py`: one worker subprocess per call (`core/sandbox/worker_main.py`), rlimits applied in the child (`core/sandbox/limits.py`: CPU 25 s soft/+5 hard, RSS 512 MB via `RLIMIT_AS`, file size 100 MB, `RLIMIT_NPROC=0` best-effort, no core dumps), wall-clock timeout → SIGKILL → `SANDBOX_TIMEOUT`; crash/OOM → `SANDBOX_CRASH`.
+- **Workspace confinement (F-004, INV-5)** — `core/workspace.py`: all file paths resolve under one root; `..` escapes, foreign absolute paths, and NUL bytes rejected with `VALIDATION_ERROR`; per-call temp dirs are cleaned up after the call.
+- **Result serialization (F-005)** — `core/serialization.py`: JSON inline up to **1 MB**; larger results (and binaries) persist to the workspace as resource refs (`protox-workspace://` URIs); hard cap **20 MB** → `RESULT_TOO_LARGE`. Binaries travel as base64+MIME; the warm worker can stream large binaries straight to disk (`__binary_persisted__`), skipping the base64 pipe tax.
+- **Structured errors (F-006)** — `adapters/base.py` defines `ToolError{code,message,details}` and the 14-code canonical vocabulary (`VALIDATION_ERROR` … `RATE_LIMITED`); `server/errors.py` maps every failure to an MCP error whose message is the JSON document — no tracebacks leave the server.
+- **Size guards (F-020)** — `adapters/_guards.py`: magic-byte validation (`CORRUPT_FILE` before parsing), input-size caps checked before parsing, boundary-inclusive clamps that report applied-vs-actual values with `truncated: true`.
+
+## Transports, auth, operations
+
+- **stdio transport (F-001)** and **Streamable HTTP transport (F-013)** — `server/app.py`; same catalog over both. HTTP serves MCP at `/mcp` plus custom routes, on host:port (default `127.0.0.1:7894`).
+- **Bearer auth + per-tool ACL (F-014)** — `server/auth.py`: tokens from env/config, stored/compared as SHA-256 hashes; per-token tool allowlists → `TOOL_NOT_PERMITTED`; `/health` and `/metrics` stay open; tokenless localhost is supported.
+- **Rate limiting (F-015)** — `server/ratelimit.py`: per-token sliding window, default 60 calls/min → `RATE_LIMITED`.
+- **Observability (F-016)** — `core/logging.py`: one JSON line per call (`tool_call_id`, duration, outcome) to `<data_dir>/logs/tool-calls.jsonl` (also stderr); Prometheus text at `GET /metrics` (call counters, error counters by code, duration histogram); `/health` reports status/version/tool count. Self-hosted only — no external telemetry.
+- **Audit ledger (F-016)** — `core/audit.py` + `core/db.py`: every governance event (kinds: `verdict`, `merge`, `repair`, `quarantine`, `config`, `install`, `rejection`) is dual-written to the SQLite `audit_events` table and `audit.jsonl`.
+- **Sandbox policy presets (F-032)** — `policies/strict.yaml`, `policies/network-egress.yaml`, `policies/permissive-dev.yaml`; selected via `PROTOX_POLICY_PRESET`/config; per-tool `enabled: false` overrides are applied at startup (strict disables the four `http_*` tools); invalid files/keys fail startup with a named `ConfigError`.
+- **Credential-injection boundary (F-033)** — `core/secrets.py`: `SecretsBroker` injects declared `secret_params` into a single call's args at the dispatcher; workers spawn with a scrubbed environment and are verifiably keyless (`doctor` checks this); defensive `scrub_text` redaction; a CI helper flags secret-looking DB columns (none exist).
+- **Dynamic compute allocation (F-038)** — `core/sizing.py`: probes cores/RAM (cgroup-v2 aware) and computes tier (small/standard/large), `--cpus`, `--memory`, worker-pool size, and per-call RSS (256/512/1024 MB) from the documented formula; `deploy/docker/compute-env.sh` emits compose values; env overrides `PROTOX_CPUS`/`PROTOX_MEMORY`/`PROTOX_WORKER_POOL`; printed, audit-logged at startup, and reported by `doctor`/`/api/status`.
+- **Docker hardened profile (F-021)** — `deploy/docker/Dockerfile` + `docker-compose.yml`: non-root `uid 10001`, read-only root FS, tmpfs `/tmp` (`noexec,nosuid`), `cap_drop: [ALL]`, `no-new-privileges`, healthcheck on `/health`; a `network-none` compose variant pins the `strict` preset with `network_mode: none`. OpenShell outer-cage profile docs live at `policies/openshell/` (F-034).
+
+## Agents and governance
+
+- **Operator console (F-017) + PyPI search (F-018)** — React/TypeScript SPA in `console/` served by the server from `console/dist/`; REST API in `server/api.py` (`/api/status`, `/api/tools`, `/api/logs`, `/api/config`, `/api/governance`, `/api/pypi/{name}` against the PyPI JSON API, `/api/snippets` for MCP-client config).
+- **Agent builder + codegen (F-019)** — `agents/codegen.py`: server-side introspection of the *installed* package only (`IntrospectionError` otherwise), rendering from `templates/adapter.py.jinja`, plus `tool_call_format.jinja` previews (`/api/tool-format/{module}`); regeneration after manual edits writes `<module>.draft.py` (E-7). Builder endpoints: `/api/introspect/{package}`, `/api/builder/generate`, `/api/builder/judge`, `/api/adapter/{module}/source` (GET/PUT).
+- **AI-judge (F-019)** — `agents/judge.py` + `policies/inv-rubric-v1.2.yaml`: Nemotron via Token Factory scores generated adapters against INV-1…INV-5 with line-level findings; the static INV-1 linter (`agents/lint.py`) hard-blocks before any model call; verdicts `pass` / `pass-with-warnings` / `blocked`; every verdict (model, prompt hash, rubric version) is audit-logged. **Auto-merge on pass / pass-with-warnings; blocked never registers; judge outage fails closed (E-5).**
+- **Package converter agent (F-029)** — `agents/converter_agent.py` + `agents/react.py`: fully autonomous ReAct loop (every step a Thought→Action→Observation triple, persisted to `react_trace.jsonl` and the audit log); pipeline stages `imported → proposed → codegen → format → merged` with durable checkpoints (resume via `--resume`, E-13); ≤10 tools per proposal (E-12); format auto-fix ≤3 cycles (AC-F029-06); judge repair ≤3 cycles then a machine-readable `rejection.json` (E-10). Production entry point `protocol-x-tool-mcp convert` (`server/convert_cli.py`); LLM repair/propose tiers use the fast model and can only steer bounded mutations — never write adapter code.
+- **Runtime self-repair (F-030)** — `agents/repair_agent.py`: captures non-validation `ToolError`s from *generated* adapters; ≥2 same-class failures in 10 min trigger diagnose → patch (fast model) → static gate → re-judge → smoke replay of the captured input → hot swap; any failed gate rolls back to the snapshot and keeps the version chain honest; **3 rolled-back repairs in 24 h quarantine the module** (`TOOL_DISABLED`, needs-human incident); console re-enable resets the breaker window.
+- **Warm worker pool + streaming persistence (F-037)** — `core/sandbox/pool.py`: pre-spawned `--serve` workers keyed by (rss, fs) rlimit buckets; dispatch without interpreter startup; one in-flight call per worker; recycling after 200 calls; `PROTOX_POOL=0` restores strict spawn-per-call. Registry lazy-loading + an mtime-keyed catalog cache (`server/registry.py`) keep cold start flat as the catalog grows.
+- **Guided onboarding (F-035)** — `server/setup.py` wizard (idempotent, confirm-before-change, non-TTY safe), `server/doctor.py` diagnostics (see `docs/cli-reference.md`), `scripts/install.sh` one-command bootstrap.
+- **Degraded mode (E-20)** — without `PROTOX_TF_API_KEY`: all 34 core tools fully live; judge/converter/repair render as disabled and fail closed (`agent_features_enabled` in `server/config.py`); `doctor` reports yellow with a remediation path.
+
+## Explicitly out of scope (PRD "Won't")
+
+- **F-027 arbitrary code-exec tool** — permanently excluded (INV-1); the AST linter and judge rubric block any `eval`/`exec`/code-string parameter shape.
+- **F-028 hosted multi-tenant SaaS** — v1 is self-hosted single-tenant; no phone-home telemetry anywhere (the only sanctioned egress is the Token Factory endpoint, INV-8).
