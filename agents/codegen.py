@@ -50,11 +50,67 @@ class FunctionCandidate:
     skipped: list[str] = field(default_factory=list)  # params with non-literal defaults
 
 
-def _py_type(annotation: Any) -> str:
+# Annotation names that mean "mapping of key/value pairs" (httpx.QueryParamTypes,
+# HeaderTypes, CookieTypes, typing.Mapping, ...) — schema type dict is honest.
+_DICT_ANNOTATIONS = {
+    "Mapping", "MutableMapping", "Dict",
+    "QueryParamTypes", "HeaderTypes", "CookieTypes",
+}
+
+# Annotation names that are string-or-str-like (httpx.URL | str, ProxyTypes, ...).
+_STR_ANNOTATIONS = {"URL", "URLTypes", "ProxyTypes", "PathLike"}
+
+# Annotation names for rich object params we cannot expose honestly as schema
+# scalars (auth callables, byte streams, request bodies) — drop the parameter.
+_DROP_ANNOTATIONS = {
+    "AuthTypes", "RequestContent", "RequestData", "RequestFiles",
+    "SyncByteStream", "AsyncByteStream", "Callable", "CertTypes",
+}
+
+
+def _annotation_names(annotation: Any) -> set[str]:
+    """Candidate type names from an annotation, object or string.
+
+    Packages with `from __future__ import annotations` (e.g. httpx) hand us
+    plain strings like 'QueryParamTypes | None'; tokenize those. Real type
+    objects contribute their __name__.
+    """
+    if isinstance(annotation, str):
+        names = set()
+        for token in annotation.replace("|", ",").split(","):
+            token = token.strip().strip("\"'")
+            if not token or token == "None":
+                continue
+            names.add(token.split("[")[0].split(".")[-1].strip())
+        return names
+    name = getattr(annotation, "__name__", None)
+    return {name} if name else set()
+
+
+def _py_type(annotation: Any) -> str | None:
+    """Map a Python annotation to a schema type, or None to drop the parameter.
+
+    Union members that are mapping types (httpx QueryParamTypes & friends)
+    map to dict; URL-like unions map to str. Rich object types (auth
+    callables, byte streams, request bodies) cannot be represented honestly
+    in a JSON schema, so the parameter is dropped (INV-3); anything else
+    unknown falls back to Any.
+    """
     if annotation is inspect.Parameter.empty:
         return "str"
-    name = getattr(annotation, "__name__", str(annotation))
-    return _TYPE_MAP.get(name, "str")
+    names = _annotation_names(annotation)
+    if names & _DROP_ANNOTATIONS:
+        return None
+    if names & _DICT_ANNOTATIONS:
+        return "dict"
+    if names & _STR_ANNOTATIONS:
+        return "str"
+    mapped = [_TYPE_MAP[n] for n in names if n in _TYPE_MAP]
+    if len(mapped) == 1:
+        return mapped[0]
+    if not names:
+        return _TYPE_MAP.get(str(annotation), "Any")
+    return "Any"
 
 
 def _literal_default(value: Any) -> str | None:
@@ -98,6 +154,13 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
             if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
                 continue  # no *args/**kwargs pass-through — fixed wrappers only (INV-1)
             type_name = _py_type(param.annotation)
+            if type_name is None:
+                # Rich object param (auth callable, byte stream, body type) —
+                # not representable in a JSON schema; drop it. All such
+                # params in supported packages carry defaults, so dropping
+                # is runtime-safe.
+                skipped.append(pname)
+                continue
             default_repr: str | None = None
             if param.default is not inspect.Parameter.empty:
                 default_repr = _literal_default(param.default)

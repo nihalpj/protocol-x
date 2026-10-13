@@ -18,25 +18,29 @@ class HttpxCreateSslContextIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     verify: bool = Field(default=True, description="parameter verify")
-    cert: str | None = Field(default=None, description="parameter cert")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_create_ssl_context(ws, *, verify: bool, cert: str | None, trust_env: bool) -> dict[str, Any]:
+def httpx_create_ssl_context(ws, *, verify: bool, trust_env: bool) -> dict[str, Any]:
     """httpx.create_ssl_context
+
+    Not exposed: cert (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
     try:
         result = httpx.create_ssl_context(
             verify=verify,
-            cert=cert,
             trust_env=trust_env,
         )
     except ToolError:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"create_ssl_context failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -45,20 +49,19 @@ class HttpxDeleteIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_delete(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_delete(ws, *, url: str, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `DELETE` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -68,7 +71,6 @@ def httpx_delete(ws, *, url: str, params: str | None, headers: str | None, cooki
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -78,6 +80,10 @@ def httpx_delete(ws, *, url: str, params: str | None, headers: str | None, cooki
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"delete failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -86,20 +92,19 @@ class HttpxGetIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_get(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_get(ws, *, url: str, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `GET` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -109,7 +114,6 @@ def httpx_get(ws, *, url: str, params: str | None, headers: str | None, cookies:
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -119,6 +123,10 @@ def httpx_get(ws, *, url: str, params: str | None, headers: str | None, cookies:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"get failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -127,20 +135,19 @@ class HttpxHeadIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_head(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_head(ws, *, url: str, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `HEAD` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -150,7 +157,6 @@ def httpx_head(ws, *, url: str, params: str | None, headers: str | None, cookies
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -160,6 +166,10 @@ def httpx_head(ws, *, url: str, params: str | None, headers: str | None, cookies
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"head failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -168,20 +178,19 @@ class HttpxOptionsIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_options(ws, *, url: str, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_options(ws, *, url: str, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends an `OPTIONS` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -191,7 +200,6 @@ def httpx_options(ws, *, url: str, params: str | None, headers: str | None, cook
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -201,6 +209,10 @@ def httpx_options(ws, *, url: str, params: str | None, headers: str | None, cook
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"options failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -209,38 +221,30 @@ class HttpxPatchIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    content: str | None = Field(default=None, description="parameter content")
-    data: str | None = Field(default=None, description="parameter data")
-    files: str | None = Field(default=None, description="parameter files")
-    json: str | None = Field(default=None, description="parameter json")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    json: Any | None = Field(default=None, description="parameter json")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_patch(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_patch(ws, *, url: str, json: Any | None, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `PATCH` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: content, data, files, auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
     try:
         result = httpx.patch(
             url=url,
-            content=content,
-            data=data,
-            files=files,
             json=json,
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -250,6 +254,10 @@ def httpx_patch(ws, *, url: str, content: str | None, data: str | None, files: s
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"patch failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -258,38 +266,30 @@ class HttpxPostIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    content: str | None = Field(default=None, description="parameter content")
-    data: str | None = Field(default=None, description="parameter data")
-    files: str | None = Field(default=None, description="parameter files")
-    json: str | None = Field(default=None, description="parameter json")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    json: Any | None = Field(default=None, description="parameter json")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_post(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_post(ws, *, url: str, json: Any | None, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `POST` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: content, data, files, auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
     try:
         result = httpx.post(
             url=url,
-            content=content,
-            data=data,
-            files=files,
             json=json,
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -299,6 +299,10 @@ def httpx_post(ws, *, url: str, content: str | None, data: str | None, files: st
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"post failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -307,38 +311,30 @@ class HttpxPutIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     url: str = Field(description="parameter url")
-    content: str | None = Field(default=None, description="parameter content")
-    data: str | None = Field(default=None, description="parameter data")
-    files: str | None = Field(default=None, description="parameter files")
-    json: str | None = Field(default=None, description="parameter json")
-    params: str | None = Field(default=None, description="parameter params")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    json: Any | None = Field(default=None, description="parameter json")
+    params: dict | None = Field(default=None, description="parameter params")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_put(ws, *, url: str, content: str | None, data: str | None, files: str | None, json: str | None, params: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_put(ws, *, url: str, json: Any | None, params: dict | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends a `PUT` request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: content, data, files, auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
     try:
         result = httpx.put(
             url=url,
-            content=content,
-            data=data,
-            files=files,
             json=json,
             params=params,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -348,6 +344,10 @@ def httpx_put(ws, *, url: str, content: str | None, data: str | None, files: str
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"put failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -357,24 +357,20 @@ class HttpxRequestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: str = Field(description="parameter method")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    content: str | None = Field(default=None, description="parameter content")
-    data: str | None = Field(default=None, description="parameter data")
-    files: str | None = Field(default=None, description="parameter files")
-    json: str | None = Field(default=None, description="parameter json")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    json: Any | None = Field(default=None, description="parameter json")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_request(ws, *, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_request(ws, *, method: str, url: str, params: dict | None, json: Any | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Sends an HTTP request.
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: content, data, files, auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -383,13 +379,9 @@ def httpx_request(ws, *, method: str, url: str, params: str | None, content: str
             method=method,
             url=url,
             params=params,
-            content=content,
-            data=data,
-            files=files,
             json=json,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -399,6 +391,10 @@ def httpx_request(ws, *, method: str, url: str, params: str | None, content: str
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"request failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
@@ -408,24 +404,20 @@ class HttpxStreamIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     method: str = Field(description="parameter method")
     url: str = Field(description="parameter url")
-    params: str | None = Field(default=None, description="parameter params")
-    content: str | None = Field(default=None, description="parameter content")
-    data: str | None = Field(default=None, description="parameter data")
-    files: str | None = Field(default=None, description="parameter files")
-    json: str | None = Field(default=None, description="parameter json")
-    headers: str | None = Field(default=None, description="parameter headers")
-    cookies: str | None = Field(default=None, description="parameter cookies")
-    auth: str | None = Field(default=None, description="parameter auth")
+    params: dict | None = Field(default=None, description="parameter params")
+    json: Any | None = Field(default=None, description="parameter json")
+    headers: dict | None = Field(default=None, description="parameter headers")
+    cookies: dict | None = Field(default=None, description="parameter cookies")
     proxy: str | None = Field(default=None, description="parameter proxy")
     follow_redirects: bool = Field(default=False, description="parameter follow_redirects")
     verify: bool = Field(default=True, description="parameter verify")
     trust_env: bool = Field(default=True, description="parameter trust_env")
 
 
-def httpx_stream(ws, *, method: str, url: str, params: str | None, content: str | None, data: str | None, files: str | None, json: str | None, headers: str | None, cookies: str | None, auth: str | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
+def httpx_stream(ws, *, method: str, url: str, params: dict | None, json: Any | None, headers: dict | None, cookies: dict | None, proxy: str | None, follow_redirects: bool, verify: bool, trust_env: bool) -> dict[str, Any]:
     """Alternative to `httpx.request()` that streams the response body
 
-    Not exposed: timeout (non-literal defaults; the package's own defaults apply).
+    Not exposed: content, data, files, auth, timeout (non-literal defaults; the package's own defaults apply).
 
     Limits: timeout 30s, sandboxed worker, network enabled.
     """
@@ -434,13 +426,9 @@ def httpx_stream(ws, *, method: str, url: str, params: str | None, content: str 
             method=method,
             url=url,
             params=params,
-            content=content,
-            data=data,
-            files=files,
             json=json,
             headers=headers,
             cookies=cookies,
-            auth=auth,
             proxy=proxy,
             follow_redirects=follow_redirects,
             verify=verify,
@@ -450,13 +438,17 @@ def httpx_stream(ws, *, method: str, url: str, params: str | None, content: str 
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"stream failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 
 TOOLS = [
     ToolSpec(
         name="httpx_create_ssl_context",
-        description="httpx.create_ssl_context (limits: timeout 30s, sandboxed, network)",
+        description="httpx.create_ssl_context (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxCreateSslContextIn,
         handler=httpx_create_ssl_context,
         timeout_s=30,
@@ -464,7 +456,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_delete",
-        description="Sends a `DELETE` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `DELETE` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxDeleteIn,
         handler=httpx_delete,
         timeout_s=30,
@@ -472,7 +464,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_get",
-        description="Sends a `GET` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `GET` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxGetIn,
         handler=httpx_get,
         timeout_s=30,
@@ -480,7 +472,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_head",
-        description="Sends a `HEAD` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `HEAD` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxHeadIn,
         handler=httpx_head,
         timeout_s=30,
@@ -488,7 +480,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_options",
-        description="Sends an `OPTIONS` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends an `OPTIONS` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxOptionsIn,
         handler=httpx_options,
         timeout_s=30,
@@ -496,7 +488,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_patch",
-        description="Sends a `PATCH` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `PATCH` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxPatchIn,
         handler=httpx_patch,
         timeout_s=30,
@@ -504,7 +496,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_post",
-        description="Sends a `POST` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `POST` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxPostIn,
         handler=httpx_post,
         timeout_s=30,
@@ -512,7 +504,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_put",
-        description="Sends a `PUT` request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends a `PUT` request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxPutIn,
         handler=httpx_put,
         timeout_s=30,
@@ -520,7 +512,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_request",
-        description="Sends an HTTP request. (limits: timeout 30s, sandboxed, network)",
+        description="Sends an HTTP request. (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxRequestIn,
         handler=httpx_request,
         timeout_s=30,
@@ -528,7 +520,7 @@ TOOLS = [
     ),
     ToolSpec(
         name="httpx_stream",
-        description="Alternative to `httpx.request()` that streams the response body (limits: timeout 30s, sandboxed, network)",
+        description="Alternative to `httpx.request()` that streams the response body (limits: timeout 30s, sandboxed, network: outbound connections via httpx; destination URLs are supplied by the caller at tool-call time)",
         input_model=HttpxStreamIn,
         handler=httpx_stream,
         timeout_s=30,

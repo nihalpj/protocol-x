@@ -41,6 +41,10 @@ def {{ fn.tool_name }}(ws, *, {% for arg in fn.args %}{{ arg.name }}: {{ arg.typ
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"{{ fn.target }} failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        # HTTP-response-like object (httpx/requests): return the useful parts,
+        # body capped so a huge page cannot blow up the tool result.
+        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
     return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
 
 {% endfor %}
@@ -48,7 +52,7 @@ TOOLS = [
 {%- for fn in functions %}
     ToolSpec(
         name="{{ fn.tool_name }}",
-        description="{{ fn.description }} (limits: timeout {{ timeout_s }}s, sandboxed{% if network %}, network{% endif %})",
+        description="{{ fn.description }} (limits: timeout {{ timeout_s }}s, sandboxed{% if network %}, network: outbound connections via {{ import_name }}; destination URLs are supplied by the caller at tool-call time{% endif %})",
         input_model={{ fn.model_name }},
         handler={{ fn.tool_name }},
         timeout_s={{ timeout_s }},

@@ -155,3 +155,97 @@ def test_judge_verdict_wrapped_in_prose_parses():
     judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
     verdict = judge.review(CLEAN_ADAPTER, "demo")
     assert verdict.verdict == "pass"
+
+
+def _big_adapter(tools: int, bad_tool: str | None = None) -> str:
+    """Build a generated-shape adapter above the chunk threshold."""
+    parts = [
+        "from __future__ import annotations",
+        "from typing import Any",
+        "from pydantic import BaseModel, ConfigDict, Field",
+        "from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec",
+    ]
+    names = []
+    for i in range(tools):
+        name = f"demo_tool{i}"
+        names.append(name)
+        model = f"DemoTool{i}In"
+        comment = '"""' + ("x" * 2500) + '"""'  # pad each block to reach the threshold
+        parts.append(
+            f"class {model}(BaseModel):\n"
+            f'    model_config = ConfigDict(extra="forbid")\n'
+            f'    path: str = Field(description="p")\n\n'
+            f"def {name}(ws, *, path: str) -> dict:\n"
+            f"    {comment}\n"
+            + ('    eval(path)\n' if name == bad_tool else "    result = path\n")
+            + '    return {"result": result}\n'
+        )
+    specs = ",\n".join(
+        f'    ToolSpec(name="{n}", description="d", input_model=DemoTool{i}In, handler={n})'
+        for i, n in enumerate(names)
+    )
+    parts.append(f"TOOLS = [\n{specs},\n]")
+    return "\n\n".join(parts)
+
+
+def test_split_into_tool_chunks_covers_every_tool():
+    from agents.judge import _split_into_tool_chunks
+
+    source = _big_adapter(6)
+    assert len(source) > 12_000
+    chunks = _split_into_tool_chunks(source)
+    assert [label for label, _ in chunks] == [f"demo_tool{i}" for i in range(6)]
+    for label, chunk in chunks:
+        assert "from pydantic import" in chunk  # header carried into every chunk
+        assert f"handler={label}" in chunk  # its ToolSpec entry
+        assert f"def {label}(" in chunk  # its handler
+
+
+def test_small_adapter_not_chunked():
+    from agents.judge import _split_into_tool_chunks
+
+    assert _split_into_tool_chunks(CLEAN_ADAPTER) == []
+
+
+def test_chunked_review_aggregates_worst_verdict():
+    """A blocked chunk blocks the module; findings from all chunks merge."""
+    from agents.judge import _split_into_tool_chunks
+
+    source = _big_adapter(6)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompt = body["messages"][1]["content"]
+        seen.append(prompt)
+        # block exactly the chunk that contains demo_tool2's handler
+        if "def demo_tool2(" in prompt:
+            doc = {"verdict": "blocked", "findings": [{"line": 1, "rule": "INV-1", "message": "bad"}]}
+        else:
+            doc = {"verdict": "pass", "findings": []}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(doc)}}]})
+
+    client = TokenFactoryClient(
+        "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    verdict = judge.review(source, "demo")
+    assert verdict.verdict == "blocked"
+    assert len(seen) == len(_split_into_tool_chunks(source)) == 6
+    assert verdict.findings[0]["rule"] == "INV-1"
+    assert verdict.prompt_hash  # combined hash present
+
+
+def test_chunked_review_all_pass():
+    source = _big_adapter(3)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"verdict": "pass", "findings": []}'}}]}
+        )
+
+    client = TokenFactoryClient(
+        "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    assert judge.review(source, "demo").verdict == "pass"

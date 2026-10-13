@@ -8,6 +8,8 @@ model, prompt hash, and rubric version (AC-F019-05).
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +26,10 @@ log = get_logger("judge")
 RUBRIC_PATH = Path(__file__).resolve().parent.parent / "policies" / "inv-rubric-v1.2.yaml"
 
 VERDICTS = ("pass", "pass-with-warnings", "blocked")
+
+# Above this size the judge sees the adapter one tool at a time: large prompts
+# make long reasoning samples spiral and truncate (unparseable verdicts).
+CHUNK_THRESHOLD_CHARS = 12_000
 
 
 @dataclass
@@ -82,7 +88,42 @@ class Judge:
                 ts=time.time(),
             )
 
-        prompt = self._build_prompt(adapter_source, module_name, lint_findings)
+        chunks = _split_into_tool_chunks(adapter_source)
+        if len(chunks) <= 1:
+            return self._review_one(adapter_source, module_name, lint_findings)
+
+        # Large adapter: judge each tool chunk independently; the module
+        # verdict is the worst chunk verdict (fail closed, INV-6).
+        log.info("adapter %s is %d chars — judging %d per-tool chunks",
+                 module_name, len(adapter_source), len(chunks))
+        chunk_verdicts: list[JudgeVerdict] = []
+        for i, (label, chunk) in enumerate(chunks, 1):
+            chunk_verdicts.append(
+                self._review_one(chunk, f"{module_name}:{label} (part {i}/{len(chunks)})",
+                                 lint_findings)
+            )
+        severity = {v: i for i, v in enumerate(VERDICTS)}  # pass < warnings < blocked
+        worst = max(chunk_verdicts, key=lambda v: severity[v.verdict])
+        findings = [f for v in chunk_verdicts for f in v.findings]
+        combined_hash = hashlib.sha256(
+            "".join(v.prompt_hash for v in chunk_verdicts).encode()
+        ).hexdigest()
+        log.info("judge chunk verdicts for %s: %s -> %s",
+                 module_name, [v.verdict for v in chunk_verdicts], worst.verdict)
+        return JudgeVerdict(
+            verdict=worst.verdict,
+            findings=findings,
+            model=worst.model,
+            prompt_hash=combined_hash,
+            rubric_version=self.rubric_version,
+            ts=time.time(),
+        )
+
+    def _review_one(self, source: str, module_name: str,
+                    lint_findings: list[LintFinding]) -> JudgeVerdict:
+        import time
+
+        prompt = self._build_prompt(source, module_name, lint_findings)
         log.info("judging adapter %s with %s (%d chars)", module_name, self.model, len(prompt))
         log.debug("judge prompt for %s:\n%s", module_name, prompt)
         last_error: JudgeUnavailable | None = None
@@ -168,3 +209,61 @@ _SYSTEM_PROMPT = (
     "A single blocking violation means verdict=blocked. Cosmetic issues are warnings. "
     "Answer with JSON only."
 )
+
+
+def _split_into_tool_chunks(source: str) -> list[tuple[str, str]]:
+    """Split a generated adapter into per-tool review chunks.
+
+    Each chunk carries the import header, the tool's input model, its handler,
+    and its ToolSpec entry — everything the rubric needs for that tool. Returns
+    [] when the source doesn't match the generated shape (caller falls back to
+    whole-file review).
+    """
+    if len(source) <= CHUNK_THRESHOLD_CHARS:
+        return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    lines = source.splitlines()
+
+    def segment(node: ast.AST) -> str:
+        return "\n".join(lines[node.lineno - 1 : node.end_lineno])  # type: ignore[attr-defined]
+
+    header: list[str] = []
+    classes: dict[str, ast.ClassDef] = {}
+    handlers: dict[str, ast.FunctionDef] = {}
+    tools_list: ast.List | None = None
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            header.append(segment(node))
+        elif isinstance(node, ast.ClassDef):
+            classes[node.name] = node
+        elif isinstance(node, ast.FunctionDef):
+            handlers[node.name] = node
+        elif (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "TOOLS" for t in node.targets)
+            and isinstance(node.value, ast.List)
+        ):
+            tools_list = node.value
+    if tools_list is None or not handlers:
+        return []
+
+    header_text = "\n".join(header)
+    chunks: list[tuple[str, str]] = []
+    for elt in tools_list.elts:
+        if not isinstance(elt, ast.Call):
+            continue
+        kw = {k.arg: k.value for k in elt.keywords if k.arg}
+        handler_node = kw.get("handler")
+        model_node = kw.get("input_model")
+        if not isinstance(handler_node, ast.Name) or not isinstance(model_node, ast.Name):
+            continue
+        func = handlers.get(handler_node.id)
+        model = classes.get(model_node.id)
+        if func is None or model is None:
+            continue
+        parts = [header_text, segment(model), segment(func), segment(elt)]
+        chunks.append((handler_node.id, "\n\n".join(parts)))
+    return chunks
