@@ -333,6 +333,46 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         log.info("generation result for %s: %s", body.get("package"), result.get("state"))
         return JSONResponse(result)
 
+    @mcp.custom_route("/api/builder/drafts/clear", methods=["POST"])
+    async def api_clear_drafts(_req: Request) -> JSONResponse:
+        """Discard every draft tool: remove DB rows and catalog entries, and
+        delete the adapter file when the module has no live/quarantined tools
+        left. Drafts are unmerged generations — clearing them is the
+        operator's 'empty the drafts tray' action."""
+        drafts = [e for e in ctx.registry.list_tools(include_non_live=True) if e.state == "draft"]
+        modules: dict[str, list[str]] = {}
+        for e in drafts:
+            modules.setdefault(e.adapter_module, []).append(e.name)
+        cleared_tools = 0
+        files_deleted: list[str] = []
+        for module, names in modules.items():
+            for name in names:
+                ctx.store.tools.delete(name)
+                ctx.registry.catalog.pop(name, None)
+                cleared_tools += 1
+            survivors = [
+                e
+                for e in ctx.registry.list_tools(include_non_live=True)
+                if e.adapter_module == module
+            ]
+            if not survivors:
+                path = ctx.registry.adapters_dir / f"{module}.py"
+                if path.exists():
+                    path.unlink()
+                    files_deleted.append(module)
+                cache = ctx.registry._read_cache()
+                if cache.pop(module, None) is not None:
+                    ctx.registry._write_cache(cache)
+        ctx.audit.record(
+            "config",
+            "console-operator",
+            {"event": "drafts-cleared", "tools": cleared_tools, "files_deleted": files_deleted},
+        )
+        log.info("drafts cleared: %d tools, adapter files removed: %s", cleared_tools, files_deleted)
+        return JSONResponse(
+            {"state": "cleared", "tools_cleared": cleared_tools, "files_deleted": files_deleted}
+        )
+
     @mcp.custom_route("/api/builder/judge", methods=["POST"])
     async def api_judge(req: Request) -> JSONResponse:
         from agents.codegen import Builder

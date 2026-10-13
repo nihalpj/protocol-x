@@ -27,9 +27,52 @@ RUBRIC_PATH = Path(__file__).resolve().parent.parent / "policies" / "inv-rubric-
 
 VERDICTS = ("pass", "pass-with-warnings", "blocked")
 
-# Above this size the judge sees the adapter one tool at a time: large prompts
-# make long reasoning samples spiral and truncate (unparseable verdicts).
-CHUNK_THRESHOLD_CHARS = 12_000
+# One judge request carries the whole package adapter (all tools together) as
+# long as the input stays under this token budget; only adapters beyond it are
+# split into per-tool chunks (endpoint context safety valve).
+MAX_SINGLE_REQUEST_TOKENS = 950_000
+
+# Structured-output schema the judge is asked to answer with (OpenAI-compatible
+# json_schema response format); _parse_verdict still verifies the payload.
+_VERDICT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "judge_verdict",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": list(VERDICTS)},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "rule": {"type": "string"},
+                            "message": {"type": "string"},
+                        },
+                        "required": ["tool", "rule", "message"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["verdict", "findings"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _estimate_tokens(text: str) -> int:
+    """Input-token estimate: tiktoken when installed, else ~4 chars/token."""
+    try:
+        import tiktoken
+
+        return len(tiktoken.get_encoding("o200k_base").encode(text))
+    except ImportError:
+        return max(1, len(text) // 4)
 
 
 @dataclass
@@ -61,14 +104,22 @@ def load_rubric(path: Path = RUBRIC_PATH) -> dict:
 
 
 class Judge:
-    def __init__(self, client: TokenFactoryClient, model: str, rubric_path: Path = RUBRIC_PATH):
+    def __init__(self, client: TokenFactoryClient, model: str,
+                 rubric_path: Path = RUBRIC_PATH,
+                 max_single_request_tokens: int = MAX_SINGLE_REQUEST_TOKENS):
         self.client = client
         self.model = model
+        self.max_single_request_tokens = max_single_request_tokens
         self.rubric = load_rubric(rubric_path)
         self.rubric_version = str(self.rubric.get("version", "unknown"))
 
     def review(self, adapter_source: str, module_name: str) -> JudgeVerdict:
-        """Static lint first (deterministic blocks), then the model judge."""
+        """Static lint first (deterministic blocks), then the model judge.
+
+        The whole package adapter — every generated tool — goes to the judge
+        in ONE request with a structured-output schema, as long as the
+        estimated input stays under max_single_request_tokens; only beyond
+        that budget does review fall back to per-tool chunks."""
         import time
 
         lint_findings = lint_adapter_source(adapter_source)
@@ -88,14 +139,25 @@ class Judge:
                 ts=time.time(),
             )
 
-        chunks = _split_into_tool_chunks(adapter_source)
-        if len(chunks) <= 1:
+        prompt = self._build_prompt(adapter_source, module_name, lint_findings)
+        est_tokens = _estimate_tokens(_SYSTEM_PROMPT) + _estimate_tokens(prompt)
+        if est_tokens < self.max_single_request_tokens:
+            log.info("adapter %s est. %d tokens (< %d) — single judge request "
+                     "for all tools", module_name, est_tokens,
+                     self.max_single_request_tokens)
             return self._review_one(adapter_source, module_name, lint_findings)
 
-        # Large adapter: judge each tool chunk independently; the module
+        chunks = _split_into_tool_chunks(adapter_source)
+        if len(chunks) <= 1:
+            log.warning("adapter %s est. %d tokens but not splittable — "
+                        "single request anyway (endpoint may reject)",
+                        module_name, est_tokens)
+            return self._review_one(adapter_source, module_name, lint_findings)
+
+        # Oversized adapter: judge each tool chunk independently; the module
         # verdict is the worst chunk verdict (fail closed, INV-6).
-        log.info("adapter %s is %d chars — judging %d per-tool chunks",
-                 module_name, len(adapter_source), len(chunks))
+        log.info("adapter %s est. %d tokens (>= %d) — judging %d per-tool chunks",
+                 module_name, est_tokens, self.max_single_request_tokens, len(chunks))
         chunk_verdicts: list[JudgeVerdict] = []
         for i, (label, chunk) in enumerate(chunks, 1):
             chunk_verdicts.append(
@@ -129,14 +191,31 @@ class Judge:
         last_error: JudgeUnavailable | None = None
         for attempt in range(2):  # reasoning endpoints are stochastic: one parse retry
             try:
-                completion = self.client.chat(
-                    self.model,
-                    [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=32768,  # reasoning models spend budget on reasoning_content
-                )
+                try:
+                    completion = self.client.chat(
+                        self.model,
+                        [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        max_tokens=32768,  # reasoning models spend budget on reasoning_content
+                        response_format=_VERDICT_RESPONSE_FORMAT,
+                    )
+                except InferenceError as exc:
+                    if "returned 400" not in str(exc):
+                        raise
+                    # Endpoint/model without structured-output support: fall
+                    # back to the plain JSON prompt (still verified below).
+                    log.warning("structured output rejected (%s) — plain JSON fallback",
+                                fmt_obj(exc, limit=200))
+                    completion = self.client.chat(
+                        self.model,
+                        [
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        max_tokens=32768,
+                    )
             except InferenceError as exc:
                 log.error("judge unavailable for %s: %s", module_name, exc)
                 raise JudgeUnavailable(str(exc)) from exc
@@ -170,7 +249,8 @@ class Judge:
             f"ADAPTER adapters/{module_name}.py:\n```python\n{source}\n```\n\n"
             "Respond with ONLY a JSON object: "
             '{"verdict": "pass"|"pass-with-warnings"|"blocked", '
-            '"findings": [{"line": <int>, "rule": "<rubric id>", "message": "<short>"}]}'
+            '"findings": [{"tool": "<tool name>", "line": <int>, '
+            '"rule": "<rubric id>", "message": "<short>"}]}'
         )
 
     def _parse_verdict(self, content: str) -> JudgeVerdict:
@@ -217,10 +297,9 @@ def _split_into_tool_chunks(source: str) -> list[tuple[str, str]]:
     Each chunk carries the import header, the tool's input model, its handler,
     and its ToolSpec entry — everything the rubric needs for that tool. Returns
     [] when the source doesn't match the generated shape (caller falls back to
-    whole-file review).
+    whole-file review). Splitting is the over-budget fallback only — the
+    caller (Judge.review) decides via the token gate.
     """
-    if len(source) <= CHUNK_THRESHOLD_CHARS:
-        return []
     try:
         tree = ast.parse(source)
     except SyntaxError:

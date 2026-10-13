@@ -51,7 +51,8 @@ class TokenFactoryClient:
         )
 
     def chat(
-        self, model: str, messages: list[dict], temperature: float = 0.0, max_tokens: int = 4096
+        self, model: str, messages: list[dict], temperature: float = 0.0,
+        max_tokens: int = 4096, response_format: dict | None = None,
     ) -> Completion:
         import hashlib
         import json
@@ -59,6 +60,9 @@ class TokenFactoryClient:
         payload = {"model": model, "messages": messages, "temperature": temperature}
         prompt_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
         body = {**payload, "max_tokens": max_tokens}
+        if response_format is not None:
+            # OpenAI-compatible structured output (json_schema / json_object)
+            body["response_format"] = response_format
         log.info(
             "AI request -> %s/chat/completions model=%s messages=%d max_tokens=%d hash=%s",
             self.endpoint, model, len(messages), max_tokens, prompt_hash[:12],

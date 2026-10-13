@@ -202,9 +202,67 @@ def test_split_into_tool_chunks_covers_every_tool():
 
 
 def test_small_adapter_not_chunked():
-    from agents.judge import _split_into_tool_chunks
+    """Under the token budget the whole adapter goes to the judge in ONE
+    request, however many tools it carries."""
+    seen: list[dict] = []
 
-    assert _split_into_tool_chunks(CLEAN_ADAPTER) == []
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"verdict": "pass", "findings": []}'}}]}
+        )
+
+    client = TokenFactoryClient(
+        "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    assert judge.review(CLEAN_ADAPTER, "demo").verdict == "pass"
+    assert len(seen) == 1
+
+
+def test_judge_requests_structured_output():
+    """The judge asks for a json_schema response format so the verdict is
+    machine-verifiable; _parse_verdict still validates the payload."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"verdict": "pass", "findings": []}'}}]}
+        )
+
+    client = TokenFactoryClient(
+        "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    judge.review(CLEAN_ADAPTER, "demo")
+    rf = seen[0].get("response_format")
+    assert rf and rf["type"] == "json_schema"
+    schema = rf["json_schema"]["schema"]
+    assert schema["properties"]["verdict"]["enum"] == ["pass", "pass-with-warnings", "blocked"]
+    assert "tool" in schema["properties"]["findings"]["items"]["properties"]
+
+
+def test_structured_output_unsupported_falls_back_to_plain_json():
+    """A 400 on response_format (model without structured output) retries
+    without it instead of failing closed on a feature the endpoint lacks."""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="response_format not supported")
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"verdict": "pass", "findings": []}'}}]}
+        )
+
+    client = TokenFactoryClient(
+        "test-key", max_retries=1, http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    assert judge.review(CLEAN_ADAPTER, "demo").verdict == "pass"
+    assert len(bodies) == 2 and "response_format" not in bodies[-1]
 
 
 def test_chunked_review_aggregates_worst_verdict():
@@ -228,7 +286,8 @@ def test_chunked_review_aggregates_worst_verdict():
     client = TokenFactoryClient(
         "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
-    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    # token gate forced to 1: exercises the over-budget per-tool chunk fallback
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b", max_single_request_tokens=1)
     verdict = judge.review(source, "demo")
     assert verdict.verdict == "blocked"
     assert len(seen) == len(_split_into_tool_chunks(source)) == 6
@@ -247,5 +306,5 @@ def test_chunked_review_all_pass():
     client = TokenFactoryClient(
         "test-key", http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )
-    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b")
+    judge = Judge(client, "nvidia/Nemotron-3-Ultra-550b-a55b", max_single_request_tokens=1)
     assert judge.review(source, "demo").verdict == "pass"

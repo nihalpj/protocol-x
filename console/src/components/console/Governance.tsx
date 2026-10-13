@@ -70,10 +70,21 @@ function Empty({ text }: { text: string }) {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex max-h-72 min-w-0 flex-col rounded-xl border border-[#e4e4e7] bg-[#fafafa] p-3">
-      <div className="mb-2 shrink-0 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">{title}</div>
+      <div className="mb-2 flex shrink-0 items-center gap-2 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">
+        <span>{title}</span>
+        {action && <span className="ml-auto normal-case tracking-normal">{action}</span>}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 scroll-thin">{children}</div>
     </div>
   );
@@ -138,6 +149,27 @@ function DraftList({ drafts, agentEnabled }: { drafts: DraftTool[]; agentEnabled
 export function Governance() {
   const govQ = useApi(api.governance, 10000);
   const gov = govQ.data;
+  const [clearing, setClearing] = useState(false);
+
+  const onClearDrafts = async () => {
+    if (!gov || gov.drafts.length === 0) return;
+    const modules = [...new Set(gov.drafts.map((d) => d.module))].join(", ");
+    if (!window.confirm(`Discard all ${gov.drafts.length} draft tool(s) from: ${modules}?\n\nUnmerged adapter files are deleted; this cannot be undone.`)) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const r = await api.clearDrafts();
+      toast.success(
+        `drafts cleared — ${r.tools_cleared} tool(s) discarded` +
+          (r.files_deleted.length ? `, removed: ${r.files_deleted.join(", ")}` : ""),
+      );
+    } catch (e) {
+      toast.error(`clear drafts failed — ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-[#fafafa]">
@@ -158,7 +190,21 @@ export function Governance() {
         )}
         {gov && (
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <Card title={`drafts (${gov.drafts.length})`}>
+            <Card
+              title={`drafts (${gov.drafts.length})`}
+              action={
+                gov.drafts.length > 0 ? (
+                  <button
+                    disabled={clearing}
+                    onClick={() => void onClearDrafts()}
+                    title="discard every draft tool and delete unmerged adapter files"
+                    className="rounded-md border border-[#fecaca] bg-white px-2 py-0.5 text-[9.5px] font-medium text-[#b91c1c] hover:bg-[#fef2f2] disabled:opacity-40"
+                  >
+                    {clearing ? "clearing…" : "clear drafts"}
+                  </button>
+                ) : undefined
+              }
+            >
               <DraftList drafts={gov.drafts} agentEnabled={gov.agent_features_enabled} />
             </Card>
 

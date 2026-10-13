@@ -174,3 +174,27 @@ def test_builder_routes_fail_closed_without_key(client):
     assert resp.status_code in (200, 404, 422)
     if resp.status_code == 200:
         assert resp.json()["state"] in ("generation-failed", "judge-unavailable")
+
+
+def test_clear_drafts(client, ctx):
+    from server.registry import CatalogEntry
+
+    ctx.store.tools.upsert("drafty_tool", "draft", "testdraft", "python", None)
+    ctx.registry.catalog["drafty_tool"] = CatalogEntry(
+        name="drafty_tool",
+        description="",
+        schema={},
+        adapter_module="testdraft",
+        state="draft",
+    )
+    gov = client.get("/api/governance").json()
+    assert {"name": "drafty_tool", "module": "testdraft"} in gov["drafts"]
+
+    resp = client.post("/api/builder/drafts/clear")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "cleared" and body["tools_cleared"] >= 1
+    assert ctx.store.tools.get("drafty_tool") is None
+    assert "drafty_tool" not in ctx.registry.catalog
+    gov = client.get("/api/governance").json()
+    assert all(d["name"] != "drafty_tool" for d in gov["drafts"])

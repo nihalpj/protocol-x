@@ -339,6 +339,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ module }),
     }),
+  clearDrafts: () =>
+    request<{ state: string; tools_cleared: number; files_deleted: string[] }>(
+      "/api/builder/drafts/clear",
+      { method: "POST", body: "{}" },
+    ),
 };
 
 // ---------- polling hook ----------
