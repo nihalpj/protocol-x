@@ -150,6 +150,10 @@ def create_mcp(ctx: AppContext) -> FastMCP:
     async def metrics(_request: Request) -> PlainTextResponse:
         return PlainTextResponse(ctx.metrics.render_prometheus())
 
+    from server.api import register_api_routes
+
+    register_api_routes(mcp, ctx)
+
     return mcp
 
 

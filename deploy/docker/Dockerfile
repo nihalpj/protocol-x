@@ -32,10 +32,13 @@ USER 10001
 ENV PROTOX_DATA_DIR=/data \
     PROTOX_WORKSPACE=/data/workspace \
     PROTOX_HOST=0.0.0.0 \
-    PROTOX_PORT=7894
+    PROTOX_PORT=7894 \
+    HOME=/tmp
 
 EXPOSE 7894
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD ["python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7894/health', timeout=3).status==200 else 1)"]
 
-CMD ["uv", "run", "--no-sync", "protocol-x-tool-mcp", "serve", "--transport", "http"]
+# Run the installed entry point directly: no uv cache writes at runtime,
+# which keeps the read-only root FS contract intact.
+CMD ["/app/.venv/bin/protocol-x-tool-mcp", "serve", "--transport", "http"]

@@ -1,0 +1,311 @@
+"""Console + operator REST API (F-017/F-018/F-023): /api/* routes and static
+serving of the built console SPA. All state comes from core/db.py DAOs, so the
+console and server never disagree across restarts.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import httpx
+import yaml
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+from server.app import VERSION, AppContext
+
+CONSOLE_DIST = Path(__file__).resolve().parent.parent / "console" / "dist"
+
+
+def register_api_routes(mcp, ctx: AppContext) -> None:
+    @mcp.custom_route("/api/status", methods=["GET"])
+    async def api_status(_req: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "status": "ok",
+                "version": VERSION,
+                "tools": len(ctx.registry.list_tools()),
+                "preset": ctx.settings.preset_name,
+                "sizing": ctx.sizing.to_dict(),
+                "agent_features_enabled": ctx.settings.agent_features_enabled,
+                "judge_model": ctx.settings.tf_judge_model,
+                "fast_model": ctx.settings.tf_fast_model,
+                "tf_endpoint": ctx.settings.tf_endpoint,
+                "workspace": str(ctx.workspace.root),
+                "host": ctx.settings.host,
+                "port": ctx.settings.port,
+            }
+        )
+
+    @mcp.custom_route("/api/tools", methods=["GET"])
+    async def api_tools(_req: Request) -> JSONResponse:
+        rows = []
+        versions = {v["adapter_module"]: v for v in ctx.store.versions.list()}
+        for entry in ctx.registry.list_tools(include_non_live=True):
+            version = versions.get(entry.adapter_module)
+            rows.append(
+                {
+                    "name": entry.name,
+                    "description": entry.description,
+                    "schema": entry.schema,
+                    "adapter_module": entry.adapter_module,
+                    "backend": entry.backend,
+                    "network": entry.network,
+                    "timeout_s": entry.timeout_s,
+                    "limits": entry.limits,
+                    "state": entry.state,
+                    "version_hash": version["version_hash"][:12] if version else None,
+                    "source": version["source"] if version else None,
+                }
+            )
+        return JSONResponse({"tools": rows})
+
+    @mcp.custom_route("/api/logs", methods=["GET"])
+    async def api_logs(req: Request) -> JSONResponse:
+        limit = int(req.query_params.get("limit", "200"))
+        lines: list[dict] = []
+        path = ctx.settings.log_jsonl
+        if path.exists():
+            raw = path.read_text().strip().splitlines()[-limit:]
+            lines = [json.loads(line) for line in raw if line.strip()]
+        return JSONResponse({"logs": lines})
+
+    @mcp.custom_route("/api/config", methods=["GET"])
+    async def api_config_get(_req: Request) -> JSONResponse:
+        s = ctx.settings
+        return JSONResponse(
+            {
+                "preset": {"value": s.preset_name, "source": "env/config"},
+                "limits": {
+                    "cpu_s": {"value": s.limit_cpu_s, "source": "preset+override"},
+                    "rss_mb": {"value": s.limit_rss_mb, "source": "preset+override"},
+                    "fs_mb": {"value": s.limit_fs_mb, "source": "preset+override"},
+                },
+                "network": {"value": s.preset_network, "source": "preset"},
+                "allowed_hosts": {"value": s.allowed_hosts, "source": "env/config"},
+                "rate_limit_per_min": {"value": s.rate_limit_per_min, "source": "env/config"},
+                "models": {
+                    "endpoint": {"value": s.tf_endpoint, "source": "env/config"},
+                    "judge": {"value": s.tf_judge_model, "source": "env/config"},
+                    "fast": {"value": s.tf_fast_model, "source": "env/config"},
+                },
+                "agent_features_enabled": s.agent_features_enabled,
+                "sizing_overrides": s.sizing.overrides,
+            }
+        )
+
+    @mcp.custom_route("/api/config", methods=["POST"])
+    async def api_config_post(req: Request) -> JSONResponse:
+        body = await req.json()
+        allowed = {"tf_endpoint", "tf_judge_model", "tf_fast_model", "preset"}
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            return JSONResponse({"error": "no recognized keys", "allowed": sorted(allowed)}, status_code=400)
+        s = ctx.settings
+        if "tf_endpoint" in updates:
+            s.tf_endpoint = str(updates["tf_endpoint"])
+        if "tf_judge_model" in updates:
+            s.tf_judge_model = str(updates["tf_judge_model"])
+        if "tf_fast_model" in updates:
+            s.tf_fast_model = str(updates["tf_fast_model"])
+        before = {"preset": s.preset_name, **updates}
+        # persist under data_dir; env still wins on restart (documented)
+        cfg_path = s.data_dir / "server.yaml"
+        cfg_path.write_text(yaml.safe_dump({"models": {
+            "endpoint": s.tf_endpoint, "judge": s.tf_judge_model, "fast": s.tf_fast_model,
+        }}))
+        ctx.audit.record("config", "operator", {"event": "settings-update", "changes": before})
+        return JSONResponse({"ok": True, "applied": sorted(updates), "persisted_to": str(cfg_path)})
+
+    @mcp.custom_route("/api/governance", methods=["GET"])
+    async def api_governance(_req: Request) -> JSONResponse:
+        tools = ctx.registry.list_tools(include_non_live=True)
+        verdicts = ctx.store.audit.query(kind="verdict", limit=50)
+        rejections = ctx.store.audit.query(kind="rejection", limit=50)
+        runs = ctx.store.runs.query(limit=50)
+        incidents = ctx.store.incidents.list(limit=50)
+        return JSONResponse(
+            {
+                "drafts": [e.name for e in tools if e.state == "draft"],
+                "quarantined": [e.name for e in tools if e.state == "quarantined"],
+                "verdicts": verdicts,
+                "rejections": rejections,
+                "conversion_runs": runs,
+                "repair_incidents": incidents,
+                "agent_features_enabled": ctx.settings.agent_features_enabled,
+            }
+        )
+
+    @mcp.custom_route("/api/pypi/{name}", methods=["GET"])
+    async def api_pypi(req: Request) -> JSONResponse:
+        name = req.path_params["name"]
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"https://pypi.org/pypi/{name}/json")
+        except httpx.HTTPError:
+            return JSONResponse(
+                {"state": "offline", "message": "PyPI is unreachable — check the network and retry"},
+                status_code=502,
+            )
+        if resp.status_code == 404:
+            return JSONResponse(
+                {"state": "not-found", "message": f"package '{name}' was not found on PyPI"},
+                status_code=404,
+            )
+        info = resp.json()["info"]
+        return JSONResponse(
+            {
+                "state": "ok",
+                "name": info.get("name"),
+                "version": info.get("version"),
+                "summary": info.get("summary"),
+                "license": info.get("license") or info.get("license_expression"),
+                "requires_python": info.get("requires_python"),
+                "home_page": info.get("home_page") or info.get("project_url"),
+            }
+        )
+
+    @mcp.custom_route("/api/snippets", methods=["GET"])
+    async def api_snippets(_req: Request) -> JSONResponse:
+        s = ctx.settings
+        return JSONResponse(
+            {
+                "claude_desktop": {
+                    "mcpServers": {
+                        "protocol-x": {
+                            "command": "uv",
+                            "args": ["run", "protocol-x-tool-mcp", "serve", "--transport", "stdio"],
+                        }
+                    }
+                },
+                "generic_http": {
+                    "url": f"http://{s.host}:{s.port}/mcp",
+                    "transport": "streamable-http",
+                    "headers": {"Authorization": "Bearer <token>"} if s.tokens else {},
+                },
+            }
+        )
+
+    # -- agent builder (F-019, UF-01) --------------------------------------
+
+    @mcp.custom_route("/api/introspect/{package}", methods=["GET"])
+    async def api_introspect(req: Request) -> JSONResponse:
+        from agents.codegen import IntrospectionError, introspect_package
+
+        package = req.path_params["package"]
+        try:
+            candidates = introspect_package(package)
+        except IntrospectionError as exc:
+            return JSONResponse({"state": "not-installed", "message": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "package": package,
+                "functions": [
+                    {"name": c.name, "signature": c.signature, "doc": c.doc} for c in candidates
+                ],
+            }
+        )
+
+    @mcp.custom_route("/api/builder/generate", methods=["POST"])
+    async def api_generate(req: Request) -> JSONResponse:
+        from agents.codegen import Builder, IntrospectionError
+
+        body = await req.json()
+        try:
+            result = Builder(ctx).generate(
+                package=body["package"],
+                selected=list(body.get("functions") or []),
+                agent_name=body.get("agent_name"),
+                timeout_s=int(body.get("timeout_s", 30)),
+                network=bool(body.get("network", False)),
+            )
+        except (IntrospectionError, KeyError) as exc:
+            return JSONResponse({"state": "error", "message": str(exc)}, status_code=400)
+        return JSONResponse(result)
+
+    @mcp.custom_route("/api/builder/judge", methods=["POST"])
+    async def api_judge(req: Request) -> JSONResponse:
+        from agents.codegen import Builder
+
+        body = await req.json()
+        result = Builder(ctx).judge_and_merge(str(body["module"]))
+        return JSONResponse(
+            {
+                "state": result.state,
+                "tools": result.tools,
+                "diagnostics": result.diagnostics,
+                "verdict": result.verdict.to_dict() if result.verdict else None,
+            }
+        )
+
+    @mcp.custom_route("/api/adapter/{module}/source", methods=["GET", "PUT"])
+    async def api_adapter_source(req: Request) -> JSONResponse:
+        module = req.path_params["module"]
+        path = (ctx.registry.adapters_dir / f"{module}.py").resolve()
+        if not str(path).startswith(str(ctx.registry.adapters_dir.resolve())):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        if req.method == "GET":
+            if not path.exists():
+                return JSONResponse({"error": "no such adapter"}, status_code=404)
+            versions = ctx.store.versions.list(module)
+            return JSONResponse(
+                {
+                    "module": module,
+                    "source": path.read_text(),
+                    "source_kind": versions[-1]["source"] if versions else None,
+                }
+            )
+        from agents.codegen import Builder
+
+        body = await req.json()
+        result = Builder(ctx).save_manual_edit(module, str(body["source"]))
+        return JSONResponse(
+            {
+                "state": result.state,
+                "diagnostics": result.diagnostics,
+                "verdict": result.verdict.to_dict() if result.verdict else None,
+            }
+        )
+
+    @mcp.custom_route("/api/tool-format/{module}", methods=["GET"])
+    async def api_tool_format(req: Request) -> JSONResponse:
+        from agents.codegen import render_tool_format
+
+        module = req.path_params["module"]
+        tools = [
+            {"name": e.name, "description": e.description, "input_schema": e.schema}
+            for e in ctx.registry.list_tools(include_non_live=True)
+            if e.adapter_module == module
+        ]
+        if not tools:
+            return JSONResponse({"error": "no tools for module"}, status_code=404)
+        return JSONResponse(
+            {"module": module, "format": render_tool_format(tools, str(ctx.workspace.root))}
+        )
+
+    @mcp.custom_route("/{path:path}", methods=["GET"])
+    async def console_spa(req: Request) -> Response:
+        """Serve the built console SPA (console/dist); fallback to index.html."""
+        rel = req.path_params["path"] or "index.html"
+        candidate = (CONSOLE_DIST / rel).resolve()
+        if not str(candidate).startswith(str(CONSOLE_DIST.resolve())):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        if not candidate.is_file():
+            candidate = CONSOLE_DIST / "index.html"
+        if not candidate.is_file():
+            return JSONResponse(
+                {"error": "console not built", "hint": "cd console && npm ci && npm run build"},
+                status_code=404,
+            )
+        content_type = {
+            ".html": "text/html",
+            ".js": "text/javascript",
+            ".css": "text/css",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".woff2": "font/woff2",
+            ".json": "application/json",
+        }.get(candidate.suffix, "application/octet-stream")
+        return Response(candidate.read_bytes(), media_type=content_type)

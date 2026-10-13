@@ -1,0 +1,26 @@
+# inv-rubric v1.2 — AI-judge scoring rubric for generated adapters (F-019).
+# Versioned with the repo; previously-passed adapters re-review on major bumps (OQ-3).
+version: "1.2"
+model_role: judge
+invariants:
+  - id: INV-1
+    rule: No arbitrary code — no eval/exec/compile/__import__, no free-form code-string parameters, no subprocess/os.system; every tool is a fixed wrapper with typed params.
+    severity: block
+  - id: INV-2
+    rule: Sandbox-compatible — handlers must be pure function calls into the wrapped package; no threads, daemons, or background work; file I/O only via the ws workspace object.
+    severity: block
+  - id: INV-3
+    rule: Schema honesty — input models are pydantic with extra="forbid"; return values are JSON-serializable or BinaryResult; limits stated in descriptions.
+    severity: block
+  - id: INV-4
+    rule: Structured errors — failures raise ToolError with a canonical code; no raw exceptions, no tracebacks in messages.
+    severity: block
+  - id: INV-5
+    rule: Stateless — no module-level mutable state, no caches across calls, no writes outside the workspace.
+    severity: block
+warnings:
+  - id: W-NET
+    rule: network=true tools should justify egress in their description (E-9).
+  - id: W-LIMITS
+    rule: missing or vague limits in descriptions.
+verdict_scale: [pass, pass-with-warnings, blocked]
