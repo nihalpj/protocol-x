@@ -43,6 +43,7 @@ Per-use-case suites: `scripts/test-uc-01.sh` … `test-uc-07.sh` (guides in `doc
 ## Documentation
 
 - `docs/quickstart.md` — install → first call in minutes
+- `docs/connecting-mcp-clients.md` — connect Claude Desktop/Code, Kimi Code, Cursor, and custom agents (stdio + HTTP)
 - `docs/cli-reference.md` · `docs/environment-variables.md` — complete operator references
 - `docs/features.md` · `docs/architecture.md` · `docs/security.md` — capabilities, module tree + agent loops, threat model (INV-1…8)
 - `docs/use-cases/uc-01…07.md` — persona walkthroughs · `docs/contributing.md` — dev setup and PR gates
