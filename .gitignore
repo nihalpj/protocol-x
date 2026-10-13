@@ -9,3 +9,4 @@ dist/
 .env
 console/node_modules/
 console/dist/
+nohup.out

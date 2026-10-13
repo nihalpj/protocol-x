@@ -127,6 +127,12 @@ def _literal_default(value: Any) -> str | None:
     return text
 
 
+# Public aliases for the converter agent (agents/converter_agent.py), which
+# projects the same honest typing rules onto its ToolProposal surface.
+py_schema_type = _py_type
+literal_default = _literal_default
+
+
 def introspect_package(package: str, max_candidates: int = 100) -> list[FunctionCandidate]:
     """Function surface of the *installed* package only (E-3)."""
     try:

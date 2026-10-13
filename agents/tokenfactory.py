@@ -12,6 +12,14 @@ from dataclasses import dataclass
 
 import httpx
 
+from core.logging import fmt_obj, get_logger
+
+log = get_logger("tokenfactory")
+
+# Full request/response bodies are logged at DEBUG and capped so a 25 KB
+# prompt cannot flood the log; INFO always carries the one-line summary.
+LOG_BODY_LIMIT = 8000
+
 
 class InferenceError(Exception):
     """Endpoint unreachable / non-200 / malformed response."""
@@ -51,22 +59,44 @@ class TokenFactoryClient:
         payload = {"model": model, "messages": messages, "temperature": temperature}
         prompt_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
         body = {**payload, "max_tokens": max_tokens}
+        log.info(
+            "AI request -> %s/chat/completions model=%s messages=%d max_tokens=%d hash=%s",
+            self.endpoint, model, len(messages), max_tokens, prompt_hash[:12],
+        )
+        log.debug("AI request body: %s", fmt_obj(body, limit=LOG_BODY_LIMIT))
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
+            t0 = time.monotonic()
             try:
                 resp = self._client.post(f"{self.endpoint}/chat/completions", json=body)
+                duration_ms = (time.monotonic() - t0) * 1000
                 if resp.status_code != 200:
+                    log.warning(
+                        "AI endpoint returned %s in %.0fms (attempt %d/%d): %s",
+                        resp.status_code, duration_ms, attempt + 1, self.max_retries,
+                        resp.text[:500],
+                    )
                     raise InferenceError(f"endpoint returned {resp.status_code}: {resp.text[:200]}")
                 data = resp.json()
                 content = data["choices"][0]["message"]["content"]
+                finish = data["choices"][0].get("finish_reason")
+                log.info(
+                    "AI response <- model=%s chars=%d finish=%s duration_ms=%.0f",
+                    data.get("model", model), len(content or ""), finish, duration_ms,
+                )
+                log.debug("AI response content: %s", fmt_obj(content, limit=LOG_BODY_LIMIT))
                 if not content:
                     # Reasoning models can exhaust the token budget on
                     # reasoning_content and return empty content (finish_reason=
                     # "length") — retry with backoff rather than poisoning parsers.
-                    finish = data["choices"][0].get("finish_reason")
                     raise InferenceError(f"empty completion content (finish_reason={finish})")
                 return Completion(content=content, model=data.get("model", model), prompt_hash=prompt_hash)
             except (httpx.HTTPError, KeyError, IndexError, ValueError, InferenceError) as exc:
                 last_exc = exc
+                log.warning(
+                    "AI request failed (attempt %d/%d): %s",
+                    attempt + 1, self.max_retries, fmt_obj(exc, limit=300),
+                )
                 time.sleep(min(2**attempt, 8))  # exponential backoff
+        log.error("AI inference failed after %d attempts: %s", self.max_retries, last_exc)
         raise InferenceError(f"inference failed after {self.max_retries} attempts: {last_exc}")

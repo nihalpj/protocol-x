@@ -92,6 +92,62 @@ def test_tool_surface_capped_at_ten(workdir):
     assert len(proposals) == MAX_TOOLS
 
 
+def test_reexported_functions_are_proposed(workdir):
+    """pandas/idna-style packages re-export submodule functions at top level;
+    the __module__ == package filter used to reject all of them."""
+    pkg = types.ModuleType("fakepkg")
+    sub = types.ModuleType("fakepkg.core")
+    exec("def encode(data: str, strict: bool = False) -> str:\n    return data",
+         sub.__dict__)
+    pkg.encode = sub.encode
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(pkg)
+    assert [p.target for p in proposals] == ["encode"]
+    assert proposals[0].args[1].type == "bool"
+
+
+def test_namespace_package_scans_submodules(workdir):
+    """Pure-namespace packages (nothing at top level) fall back to a bounded
+    submodule scan with dotted targets — packaging.version.parse etc."""
+    import packaging
+
+    agent = ConverterAgent("packaging", workdir=workdir)
+    proposals = agent._propose(packaging)
+    assert proposals
+    assert any("." in p.target for p in proposals)
+
+
+def test_non_literal_default_skipped_not_fatal(workdir):
+    """A param with a non-literal default is skipped (package default
+    applies) instead of condemning the whole function."""
+    mod = types.ModuleType("fakepkg")
+    exec("def f(x: str, sentinel=object()) -> str:\n    return x", mod.__dict__)
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(mod)
+    assert len(proposals) == 1
+    assert [a.name for a in proposals[0].args] == ["x"]
+    assert proposals[0].skipped == ["sentinel"]
+
+
+def test_unannotated_param_type_inferred_from_default(workdir):
+    mod = types.ModuleType("fakepkg")
+    exec("def f(x: str, verbose=False) -> str:\n    return x", mod.__dict__)
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(mod)
+    assert proposals[0].args[1].type == "bool"
+
+
+def test_dict_annotation_maps_to_object_schema(workdir):
+    mod = types.ModuleType("fakepkg")
+    exec("def f(fields: dict, note=None) -> str:\n    return ''", mod.__dict__)
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(mod)
+    schemas = agent._schemas(proposals)
+    props = schemas[0]["input_schema"]["properties"]
+    assert props["fields"] == {"type": "object"}
+    assert props["note"] == {"type": ["string", "null"]}
+
+
 def test_restart_resume_from_db_checkpoint(ctx, workdir):
     """AC-P7-05: crash after 'format', resume from the checkpoints table."""
     store = ctx.store

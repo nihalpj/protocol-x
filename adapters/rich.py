@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import rich  # introspected installed package, v0
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
 

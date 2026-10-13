@@ -10,7 +10,8 @@ from __future__ import annotations
 {% endif %}from typing import Any
 
 {% if not import_is_stdlib %}import {{ import_name }}  # introspected installed package, v{{ package_version }}
-{% endif %}from pydantic import BaseModel, ConfigDict, Field
+{% endif %}{% for sub in submodule_imports %}import {{ import_name }}.{{ sub }}  # dotted target support
+{% endfor %}from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
 
@@ -27,7 +28,7 @@ class {{ fn.model_name }}(BaseModel):
 def {{ fn.tool_name }}(ws{% if fn.args %}, *, {% for arg in fn.args %}{{ arg.name }}: {{ arg.type }}{{ ", " if not loop.last }}{% endfor %}{% endif %}) -> dict[str, Any]:
     """{{ fn.description }}
 {% if fn.skipped %}
-    Not exposed: {{ fn.skipped | join(", ") }} (non-literal defaults; the package's own defaults apply).
+    Not exposed: {{ fn.skipped | join(", ") }} (unsupported type or non-literal default; the package's own defaults apply).
 {% endif %}
     Limits: timeout {{ timeout_s }}s, sandboxed worker{% if network %}, network enabled{% endif %}.
     """

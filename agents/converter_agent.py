@@ -63,13 +63,14 @@ import argparse
 import importlib
 import inspect
 import json
+import pkgutil
 import py_compile
 import re
 import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -82,6 +83,21 @@ try:
 except ImportError:  # direct script execution: python3 agents/converter_agent.py
     from react import ReActTracer  # type: ignore[no-redef]
 
+try:
+    # Honest annotation/default projection shared with the builder (F-019).
+    from agents.codegen import literal_default, py_schema_type
+except ImportError:  # standalone demo runs without the server tree
+
+    def py_schema_type(annotation) -> str | None:  # type: ignore[no-redef]
+        if annotation is inspect.Parameter.empty:
+            return "str"
+        return _SIMPLE_ANNOTATIONS.get(annotation)
+
+    def literal_default(value) -> str | None:  # type: ignore[no-redef]
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return repr(value)
+        return None
+
 from core.logging import fmt_obj, get_logger
 
 log = get_logger("converter")
@@ -90,6 +106,7 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
 MAX_JUDGE_CYCLES = 3    # circuit breaker: blocked-verdict repair loop (E-10)
 MAX_TOOLS = 10          # tool-surface proposal cap (E-12)
+MAX_SUBMODULES = 20     # submodule scan cap for pure-namespace packages
 RUBRIC_VERSION = "inv-rubric v1.2"
 
 # Nebius × NVIDIA Hackathon: all agent inference via Nebius Token Factory (PRD v1.6).
@@ -98,8 +115,69 @@ JUDGE_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"   # AI-judge + codegen/repair 
 FAST_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"  # converter / repair fast loops
 
 _SIMPLE_ANNOTATIONS = {str: "str", int: "int", float: "float", bool: "bool"}
-_JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean"}
 _STAGES = ["imported", "proposed", "codegen", "format", "merged"]
+
+
+def _json_prop(py_type: str) -> dict:
+    """JSON-schema fragment for a projected Python type (INV-3: honest types).
+
+    'X | None' becomes a nullable schema; 'Any'/unknown leaves the schema
+    unconstrained rather than claiming a false scalar type."""
+    nullable = py_type.endswith(" | None")
+    base = py_type[: -len(" | None")] if nullable else py_type
+    jtype = {"str": "string", "int": "integer", "float": "number",
+             "bool": "boolean", "dict": "object", "list": "array",
+             "bytes": "string"}.get(base)
+    if jtype is None:
+        return {}                        # Any: unconstrained, not "string"
+    return {"type": [jtype, "null"]} if nullable else {"type": jtype}
+
+
+def _iter_targets(mod, max_submodules: int = MAX_SUBMODULES) -> Iterator:
+    """Yield (target, callable) pairs reachable as attributes of the package.
+
+    Top-level members come first — including functions the package re-exports
+    from its own submodules (pandas/idna/click-style __init__ re-exports) and
+    C builtins. When the top level exposes nothing (pure-namespace packages
+    such as `packaging`), immediate submodules are imported (bounded by
+    max_submodules) and their own functions are yielded with dotted targets
+    ('version.parse') so generated adapters can call them via the package.
+    """
+    top = [
+        (name, member)
+        for name, member in inspect.getmembers(mod)
+        if not name.startswith("_")
+        and (inspect.isfunction(member) or inspect.isbuiltin(member))
+    ]
+    if top:
+        yield from top
+        return
+    path = getattr(mod, "__path__", None)
+    if path is None:
+        return
+    scanned = 0
+    for info in pkgutil.iter_modules(path):
+        if scanned >= max_submodules:
+            break
+        if info.name.startswith("_"):
+            continue
+        scanned += 1
+        try:
+            sub = importlib.import_module(f"{mod.__name__}.{info.name}")
+        except Exception:
+            continue                       # unimportable submodule: skip it
+        for name, member in inspect.getmembers(sub, inspect.isfunction):
+            if name.startswith("_") or member.__module__ != sub.__name__:
+                continue
+            yield f"{info.name}.{name}", member
+
+
+def _resolve(mod, target: str):
+    """Resolve a (possibly dotted) target against the package."""
+    obj = mod
+    for part in target.split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 def _static_gate(source: str) -> list[str]:
@@ -138,14 +216,16 @@ class Arg:
     type: str
     description: str
     default: str | None = None   # Python literal (repr), None = required
+    positional_only: bool = False
 
 
 @dataclass
 class ToolProposal:
     tool_name: str
-    target: str            # function attribute on the module
+    target: str            # function attribute on the module (may be dotted)
     description: str
     args: list[Arg] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)  # params left to package defaults
 
     @property
     def model_name(self) -> str:
@@ -229,7 +309,8 @@ class ConverterAgent:
 
             proposals = self.tracer.act(
                 "propose a focused tool surface — fixed-signature wrappers only (INV-1)",
-                f"inspect members, keep simple signatures, cap {MAX_TOOLS} (E-12)",
+                f"inspect top-level + re-exported functions (submodule scan fallback), "
+                f"honest types, cap {MAX_TOOLS} (E-12)",
                 lambda: self._propose(mod))
             if not proposals and self.proposer:
                 proposals = self.tracer.act(
@@ -277,38 +358,69 @@ class ConverterAgent:
     def _propose(self, mod) -> list[ToolProposal]:
         prefix = self._mod_name()[:12]
         out: list[ToolProposal] = []
-        for name, fn in inspect.getmembers(mod, inspect.isfunction):
-            if name.startswith("_") or fn.__module__ != mod.__name__:
+        for target, fn in _iter_targets(mod):
+            projected = self._simple_args(fn)
+            if projected is None:
                 continue
-            args = self._simple_args(fn)
-            if args is None:
-                continue
-            doc = (inspect.getdoc(fn) or f"{name}() from {self.package}").split("\n")[0]
+            args, skipped = projected
+            doc = (inspect.getdoc(fn) or f"{target}() from {self.package}").split("\n")[0]
             out.append(ToolProposal(
-                tool_name=f"{prefix}_{name}",
-                target=name,
+                tool_name=f"{prefix}_{target.replace('.', '_')}",
+                target=target,
                 description=self._sanitize(doc)[:120],
-                args=args))
+                args=args,
+                skipped=skipped))
             if len(out) >= MAX_TOOLS:
                 break
         return out
 
     @staticmethod
-    def _simple_args(fn) -> list[Arg] | None:
-        """Keep only simple typed params; anything exotic makes the function ineligible."""
+    def _simple_args(fn) -> tuple[list[Arg], list[str]] | None:
+        """Fixed-signature projection of one callable (INV-1, INV-3).
+
+        Params that cannot be typed honestly (rich object annotations) or
+        carry non-literal defaults are *skipped* — the package's own defaults
+        apply — instead of condemning the whole function; the schema type of
+        an unannotated param is inferred from its literal default (a bool
+        default maps to bool, never "str"). Returns None only when a required
+        param cannot be typed honestly, or when skipping an earlier param
+        would shift positional-only args out of order.
+        """
+        try:
+            params = list(inspect.signature(fn).parameters.values())
+        except (ValueError, TypeError):
+            return None
         args: list[Arg] = []
-        for p in list(inspect.signature(fn).parameters.values())[:6]:
+        skipped: list[str] = []
+        for p in params:
             if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-                return None                       # skip *args / **kwargs (INV-1 shape)
-            ptype = _SIMPLE_ANNOTATIONS.get(p.annotation, "str")
-            default = None
-            if p.default is not inspect.Parameter.empty:
-                if not isinstance(p.default, (str, int, float, bool, type(None))):
-                    return None
-                default = repr(p.default)          # Python literal for codegen
-            args.append(Arg(name=p.name, type=ptype,
-                            description=f"{p.name} argument", default=default))
-        return args
+                skipped.append(p.name)            # no pass-through (INV-1 shape)
+                continue
+            if len(args) >= 6:
+                skipped.append(p.name)
+                continue
+            type_name = py_schema_type(p.annotation)
+            default: str | None = None
+            has_default = p.default is not inspect.Parameter.empty
+            if has_default:
+                default = literal_default(p.default)
+            if type_name is None or (has_default and default is None):
+                if type_name is None and not has_default:
+                    return None                   # required param, no honest type
+                skipped.append(p.name)
+                continue
+            if (type_name == "str" and p.annotation is inspect.Parameter.empty
+                    and p.default is not None):
+                # infer from the literal default instead of guessing str (INV-3)
+                type_name = _SIMPLE_ANNOTATIONS.get(type(p.default), type_name)
+            if default == "None":
+                type_name = f"{type_name} | None"
+            if p.kind is p.POSITIONAL_ONLY and skipped:
+                return None                       # positional order would break
+            args.append(Arg(name=p.name, type=type_name,
+                            description=f"{p.name} argument", default=default,
+                            positional_only=p.kind is p.POSITIONAL_ONLY))
+        return args, skipped
 
     @staticmethod
     def _sanitize(text: str) -> str:
@@ -324,6 +436,8 @@ class ConverterAgent:
             import_name=self.package,
             package_version=self._version(),
             functions=proposals,
+            submodule_imports=sorted(
+                {p.target.split(".", 1)[0] for p in proposals if "." in p.target}),
             timeout_s=self.timeout_s,
             network=self.network,
             agent_name=f"{self.package}-agent",
@@ -340,8 +454,7 @@ class ConverterAgent:
     def _schemas(self, proposals: list[ToolProposal]) -> list[dict]:
         tools = []
         for p in proposals:
-            props = {a.name: {"type": _JSON_TYPES.get(a.type, "string")}
-                     for a in p.args}
+            props = {a.name: _json_prop(a.type) for a in p.args}
             tools.append({
                 "name": p.tool_name,
                 "description": p.description,
@@ -579,7 +692,8 @@ class ConverterAgent:
         raw = json.loads((self.workdir / "proposals.json").read_text())
         return [ToolProposal(tool_name=p["tool_name"], target=p["target"],
                              description=p["description"],
-                             args=[Arg(**a) for a in p["args"]]) for p in raw]
+                             args=[Arg(**a) for a in p["args"]],
+                             skipped=p.get("skipped", [])) for p in raw]
 
 
 # ------------------------------------------------------- production seams
@@ -693,7 +807,9 @@ def llm_proposer(settings):
     """LLM proposal fallback (fast model) for zero-surface packages.
 
     The model picks from functions introspected on the installed package —
-    it can only select and describe, never invent callables (INV-1)."""
+    top-level members, re-exports, and (for pure-namespace packages)
+    submodule functions — it can only select and describe, never invent
+    callables (INV-1)."""
     if not settings.agent_features_enabled:
         return None
     from agents.tokenfactory import InferenceError, TokenFactoryClient
@@ -702,14 +818,11 @@ def llm_proposer(settings):
                                 timeout_s=settings.tf_timeout_s)
 
     def propose(mod) -> list[ToolProposal]:
-        candidates = [
-            name for name, fn in inspect.getmembers(mod, inspect.isfunction)
-            if not name.startswith("_") and fn.__module__ == mod.__name__
-        ]
+        candidates = [target for target, _ in _iter_targets(mod)][:50]
         if not candidates:
             return []
         prompt = (
-            f"Package '{mod.__name__}' exposes: {', '.join(candidates[:50])}.\n"
+            f"Package '{mod.__name__}' exposes: {', '.join(candidates)}.\n"
             f"Pick up to {MAX_TOOLS} functions worth exposing as sandboxed MCP tools. "
             "Respond with ONLY a JSON array: "
             '[{"target": "<function>", "description": "<one line, no quotes>"}]'
@@ -730,16 +843,22 @@ def llm_proposer(settings):
         for item in data[:MAX_TOOLS]:
             if not isinstance(item, dict) or item.get("target") not in candidates:
                 continue
-            fn = getattr(mod, item["target"])
-            args = ConverterAgent._simple_args(fn)
-            if args is None:
-                args = []  # simplified wrapper: fixed signature, no exotic params
+            try:
+                fn = _resolve(mod, item["target"])
+            except AttributeError:
+                continue
+            projected = ConverterAgent._simple_args(fn)
+            if projected is None:
+                args, skipped = [], []  # simplified wrapper: fixed signature, no params
+            else:
+                args, skipped = projected
             doc = ConverterAgent._sanitize(str(item.get("description") or item["target"]))
             out.append(ToolProposal(
-                tool_name=f"{prefix}_{item['target']}",
+                tool_name=f"{prefix}_{item['target'].replace('.', '_')}",
                 target=item["target"],
                 description=doc[:120],
-                args=args))
+                args=args,
+                skipped=skipped))
         return out
 
     return propose
@@ -796,40 +915,24 @@ def _demo_repairer(mode: str):
 
 
 def _demo_proposer(mode: str):
-    """Demo LLM proposal fallback: wraps functions the heuristic rejected —
-    keeps the leading simple params, drops *args/**kwargs (best approach)."""
+    """Demo LLM proposal fallback: same broadened surface as the heuristic
+    (top-level, re-exports, submodule scan) — stands in for the LLM pick."""
     if mode == "llm-demo":
         def propose(mod) -> list[ToolProposal]:
             prefix = re.sub(r"[^a-z0-9]+", "_", mod.__name__.lower()).strip("_")[:12]
             out: list[ToolProposal] = []
-            for name, fn in inspect.getmembers(mod, inspect.isfunction):
-                if name.startswith("_") or fn.__module__ != mod.__name__:
+            for target, fn in _iter_targets(mod):
+                projected = ConverterAgent._simple_args(fn)
+                if projected is None:
                     continue
-                leading = []
-                for p in inspect.signature(fn).parameters.values():
-                    if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
-                        break                          # simplified wrapper drops the rest
-                    leading.append(p)
-                args: list[Arg] = []
-                ok = bool(leading)
-                for p in leading[:4]:
-                    ptype = _SIMPLE_ANNOTATIONS.get(p.annotation, "str")
-                    default = None
-                    if p.default is not inspect.Parameter.empty:
-                        if not isinstance(p.default, (str, int, float, bool, type(None))):
-                            ok = False
-                            break
-                        default = repr(p.default)
-                    args.append(Arg(name=p.name, type=ptype,
-                                    description=f"{p.name} argument", default=default))
-                if not ok:
-                    continue
-                doc = (inspect.getdoc(fn) or f"{name}() from {mod.__name__}").split("\n")[0]
+                args, skipped = projected
+                doc = (inspect.getdoc(fn) or f"{target}() from {mod.__name__}").split("\n")[0]
                 out.append(ToolProposal(
-                    tool_name=f"{prefix}_{name}",
-                    target=name,
+                    tool_name=f"{prefix}_{target.replace('.', '_')}",
+                    target=target,
                     description=re.sub(r'["{}\\]', "", doc)[:120],
-                    args=args))
+                    args=args,
+                    skipped=skipped))
                 if len(out) >= MAX_TOOLS:
                     break
             return out

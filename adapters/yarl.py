@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import yarl  # introspected installed package, v1.25.1
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
 
