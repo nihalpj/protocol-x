@@ -146,6 +146,62 @@ function DraftList({ drafts, agentEnabled }: { drafts: DraftTool[]; agentEnabled
   );
 }
 
+/** Judge-blocked modules grouped by adapter: the failed terminal state.
+ *  The operator edits the adapter file, then re-runs the judge (E-6). */
+function BlockedList({ blocked, agentEnabled }: { blocked: DraftTool[]; agentEnabled: boolean }) {
+  const [judging, setJudging] = useState<string | null>(null);
+  if (blocked.length === 0) return <Empty text="no blocked adapters" />;
+
+  const byModule = new Map<string, string[]>();
+  for (const d of blocked) {
+    const list = byModule.get(d.module) ?? [];
+    list.push(d.name);
+    byModule.set(d.module, list);
+  }
+
+  const onRejudge = async (module: string) => {
+    setJudging(module);
+    try {
+      const r = await api.judgeAdapter(module);
+      if (r.state === "merged") toast.success(`${module}: ${r.tools.length} tool(s) judged, merged and live`);
+      else if (r.state === "blocked") toast.error(`${module}: judge blocked the adapter again — see the verdict findings`);
+      else toast.warning(`${module}: judge ${r.state}`);
+    } catch (e) {
+      toast.error(`${module}: judge failed — ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setJudging(null);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {[...byModule.entries()].map(([module, tools]) => (
+        <div key={module} className="rounded-md border border-[#fecaca] bg-[#fef2f2]/60 px-2.5 py-1.5">
+          <div className="flex items-center gap-2">
+            <span className="mono text-[10px] font-semibold text-[#b91c1c]">{module}</span>
+            <span className="mono text-[9px] text-[#a1a1aa]">
+              {tools.length} blocked tool{tools.length === 1 ? "" : "s"} — never registered
+            </span>
+            <button
+              disabled={!agentEnabled || judging !== null}
+              onClick={() => void onRejudge(module)}
+              title={
+                agentEnabled
+                  ? "re-run the AI judge after editing the adapter file"
+                  : "requires a Token Factory key (degraded mode)"
+              }
+              className="ml-auto shrink-0 rounded-md border border-[#fecaca] bg-white px-2 py-0.5 text-[9.5px] font-medium text-[#b91c1c] hover:bg-[#fef2f2] disabled:opacity-40"
+            >
+              {judging === module ? "judging…" : "re-judge →"}
+            </button>
+          </div>
+          <div className="mono mt-1 text-[9.5px] leading-relaxed text-[#71717a]">{tools.join(", ")}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Governance() {
   const govQ = useApi(api.governance, 10000);
   const gov = govQ.data;
@@ -206,6 +262,10 @@ export function Governance() {
               }
             >
               <DraftList drafts={gov.drafts} agentEnabled={gov.agent_features_enabled} />
+            </Card>
+
+            <Card title={`blocked (${gov.blocked.length})`}>
+              <BlockedList blocked={gov.blocked} agentEnabled={gov.agent_features_enabled} />
             </Card>
 
             <Card title={`quarantined (${gov.quarantined.length})`}>

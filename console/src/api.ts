@@ -31,8 +31,8 @@ export interface ServerStatus {
   port: number;
 }
 
-export type ToolState = "live" | "draft" | "quarantined";
-export type ToolSource = "built-in" | "generated" | "manual";
+export type ToolState = "live" | "draft" | "quarantined" | "blocked";
+export type ToolSource = "built-in" | "generated" | "manual" | "custom";
 
 export interface ToolRow {
   name: string;
@@ -142,6 +142,7 @@ export interface DraftTool {
 
 export interface Governance {
   drafts: DraftTool[];
+  blocked: DraftTool[];
   quarantined: string[];
   verdicts: AuditEvent[];
   rejections: AuditEvent[];

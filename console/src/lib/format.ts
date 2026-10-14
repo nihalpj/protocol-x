@@ -42,12 +42,14 @@ export const STATE_DOT: Record<string, string> = {
   live: "#16a34a",
   draft: "#d97706",
   quarantined: "#dc2626",
+  blocked: "#dc2626",
 };
 
 export const STATE_BADGE: Record<string, string> = {
   live: "bg-[#f0fdf4] text-[#15803d]",
   draft: "bg-[#fffbeb] text-[#b45309]",
   quarantined: "bg-[#fef2f2] text-[#b91c1c]",
+  blocked: "bg-[#fef2f2] text-[#b91c1c]",
 };
 
 export const LEVEL_COLOR: Record<string, string> = {

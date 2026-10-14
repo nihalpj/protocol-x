@@ -134,6 +134,42 @@ def test_tool_format_preview(builder, ctx):
     assert "additionalProperties" in fmt
 
 
+def test_blocked_verdict_moves_drafts_to_blocked(builder, ctx, monkeypatch):
+    """Blocked judge verdict: draft tools must leave 'draft' for a visible
+    terminal 'blocked' state (not silently re-listed as drafts on restart),
+    and a later re-judge pass still merges them live."""
+    from agents.judge import JudgeVerdict
+
+    class BlockJudge:
+        def __init__(self, client, model): pass
+
+        def review(self, source, module):
+            return JudgeVerdict(verdict="blocked", findings=[{"line": 1, "rule": "INV-3", "message": "x"}],
+                                model="stub", rubric_version="1.2")
+
+    class PassJudge:
+        def __init__(self, client, model): pass
+
+        def review(self, source, module):
+            return JudgeVerdict(verdict="pass", findings=[], model="stub", rubric_version="1.2")
+
+    monkeypatch.setattr(ctx.settings, "tf_api_key", "test-key")
+    builder.generate("json", ["loads"], agent_name="json-agent")
+    assert ctx.store.tools.get("json_loads")["state"] == "draft"
+
+    monkeypatch.setattr("agents.codegen.Judge", BlockJudge)
+    blocked = builder.judge_and_merge("json")
+    assert blocked.state == "blocked"
+    assert ctx.store.tools.get("json_loads")["state"] == "blocked"
+    assert ctx.registry.entry_state("json_loads") != "live"
+
+    # edit + re-judge path (E-6): a pass moves blocked -> live
+    monkeypatch.setattr("agents.codegen.Judge", PassJudge)
+    merged = builder.judge_and_merge("json")
+    assert merged.state == "merged"
+    assert ctx.store.tools.get("json_loads")["state"] == "live"
+
+
 @pytest.fixture(autouse=True)
 def _cleanup_generated(ctx):
     yield

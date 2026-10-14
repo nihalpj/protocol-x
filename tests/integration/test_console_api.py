@@ -198,3 +198,69 @@ def test_clear_drafts(client, ctx):
     assert "drafty_tool" not in ctx.registry.catalog
     gov = client.get("/api/governance").json()
     assert all(d["name"] != "drafty_tool" for d in gov["drafts"])
+
+
+def _stub_judge(monkeypatch, ctx, verdict):
+    from agents.judge import JudgeVerdict
+
+    class StubJudge:
+        def __init__(self, client, model): pass
+
+        def review(self, source, module):
+            findings = ([{"line": 1, "rule": "INV-3", "message": "x"}]
+                        if verdict == "blocked" else [])
+            return JudgeVerdict(verdict=verdict, findings=findings,
+                                model="stub", rubric_version="1.2")
+
+    monkeypatch.setattr(ctx.settings, "tf_api_key", "test-key")
+    monkeypatch.setattr("agents.codegen.Judge", StubJudge)
+
+
+def test_judge_blocked_lists_module_under_blocked(client, ctx, monkeypatch):
+    """Blocked via the console: tools leave the drafts tray and show up as
+    blocked (failed) instead of staying drafts forever."""
+    from agents.codegen import Builder
+
+    _stub_judge(monkeypatch, ctx, "blocked")
+    assert Builder(ctx).generate("json", ["loads"])["state"] == "generated"
+    assert {"name": "json_loads", "module": "json"} in (
+        client.get("/api/governance").json()["drafts"])
+
+    resp = client.post("/api/builder/judge", json={"module": "json"})
+    assert resp.json()["state"] == "blocked"
+
+    gov = client.get("/api/governance").json()
+    assert {"name": "json_loads", "module": "json"} in gov["blocked"]
+    assert all(d["module"] != "json" for d in gov["drafts"])
+
+
+async def test_judge_merge_hot_registers_tools(ctx, monkeypatch):
+    """Merged via the console judge endpoint, the tools must become callable
+    on the SAME running MCP instance — no restart required."""
+    from fastmcp import Client
+
+    from agents.codegen import Builder
+    from server.app import create_mcp
+
+    _stub_judge(monkeypatch, ctx, "pass")
+    assert Builder(ctx).generate("json", ["loads"])["state"] == "generated"
+
+    mcp = create_mcp(ctx)
+    with TestClient(mcp.http_app()) as client:
+        resp = client.post("/api/builder/judge", json={"module": "json"})
+        assert resp.json()["state"] == "merged"
+
+    async with Client(mcp) as mc:
+        tools = {t.name for t in await mc.list_tools()}
+    assert "json_loads" in tools
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_json_adapter(ctx):
+    yield
+    import os
+
+    for name in ("json.py", "json.draft.py"):
+        path = ctx.registry.adapters_dir / name
+        if path.exists():
+            os.remove(path)

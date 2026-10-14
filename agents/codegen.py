@@ -384,6 +384,13 @@ class Builder:
 
         if verdict.verdict == "blocked":
             log.warning("adapter %s blocked by judge: %s", module_name, fmt_obj(verdict.findings))
+            # Terminal, visible state for the failed generation (AC-F019-04):
+            # drafts become 'blocked' instead of staying drafts forever and
+            # reappearing in the console tray on every restart. A later edit
+            # + re-judge pass still moves them blocked -> live (E-6).
+            for row in self.ctx.store.tools.list(state="draft"):
+                if row["adapter_module"] == module_name:
+                    self.ctx.registry.set_state(row["name"], "blocked")
             return MergeResult(state="blocked", verdict=verdict)
 
         # pass / pass-with-warnings -> auto-merge (UF-01 step 10a/10b)

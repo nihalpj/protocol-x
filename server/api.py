@@ -163,7 +163,10 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
 
     @mcp.custom_route("/api/governance", methods=["GET"])
     async def api_governance(_req: Request) -> JSONResponse:
-        tools = ctx.registry.list_tools(include_non_live=True)
+        # Draft/blocked/quarantined listings read the DB (system of record):
+        # generate() registers draft rows without touching the catalog, so a
+        # catalog-only read would hide them until the next restart.
+        rows = ctx.store.tools.list()
         verdicts = ctx.store.audit.query(kind="verdict", limit=50)
         rejections = ctx.store.audit.query(kind="rejection", limit=50)
         runs = ctx.store.runs.query(limit=50)
@@ -171,11 +174,16 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         return JSONResponse(
             {
                 "drafts": [
-                    {"name": e.name, "module": e.adapter_module}
-                    for e in tools
-                    if e.state == "draft"
+                    {"name": r["name"], "module": r["adapter_module"]}
+                    for r in rows
+                    if r["state"] == "draft"
                 ],
-                "quarantined": [e.name for e in tools if e.state == "quarantined"],
+                "blocked": [
+                    {"name": r["name"], "module": r["adapter_module"]}
+                    for r in rows
+                    if r["state"] == "blocked"
+                ],
+                "quarantined": [r["name"] for r in rows if r["state"] == "quarantined"],
                 "verdicts": verdicts,
                 "rejections": rejections,
                 "conversion_runs": runs,
@@ -339,10 +347,10 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         delete the adapter file when the module has no live/quarantined tools
         left. Drafts are unmerged generations — clearing them is the
         operator's 'empty the drafts tray' action."""
-        drafts = [e for e in ctx.registry.list_tools(include_non_live=True) if e.state == "draft"]
+        drafts = ctx.store.tools.list(state="draft")
         modules: dict[str, list[str]] = {}
-        for e in drafts:
-            modules.setdefault(e.adapter_module, []).append(e.name)
+        for row in drafts:
+            modules.setdefault(row["adapter_module"], []).append(row["name"])
         cleared_tools = 0
         files_deleted: list[str] = []
         for module, names in modules.items():
@@ -351,9 +359,9 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                 ctx.registry.catalog.pop(name, None)
                 cleared_tools += 1
             survivors = [
-                e
-                for e in ctx.registry.list_tools(include_non_live=True)
-                if e.adapter_module == module
+                r
+                for r in ctx.store.tools.list()
+                if r["adapter_module"] == module
             ]
             if not survivors:
                 path = ctx.registry.adapters_dir / f"{module}.py"
@@ -378,9 +386,17 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         from agents.codegen import Builder
 
         body = await req.json()
-        log.info("operator requested judge+merge for module %s", body.get("module"))
-        result = Builder(ctx).judge_and_merge(str(body["module"]))
-        log.info("judge+merge for %s: %s", body.get("module"), result.state)
+        module = str(body["module"])
+        log.info("operator requested judge+merge for module %s", module)
+        result = Builder(ctx).judge_and_merge(module)
+        log.info("judge+merge for %s: %s", module, result.state)
+        if result.state == "merged":
+            # Same hot-registration as the MCP operator path: merged tools are
+            # callable on this running instance, no restart required.
+            from server.operator_tools import _hot_register
+
+            known = {t.name for t in await mcp.list_tools()}
+            _hot_register(mcp, ctx, module, known)
         return JSONResponse(
             {
                 "state": result.state,
