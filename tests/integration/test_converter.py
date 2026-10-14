@@ -14,6 +14,7 @@ import types
 import pytest
 
 from agents.converter_agent import (
+    MAX_JUDGE_CYCLES,
     MAX_TOOLS,
     Arg,
     ConversionRejected,
@@ -75,13 +76,13 @@ def test_permanent_block_rejects_fail_closed(workdir):
     assert record["package"] == "textwrap"
 
 
-def test_judge_exhaustion_rejects_after_three_cycles(workdir):
+def test_judge_exhaustion_rejects_after_budget(workdir):
     agent = ConverterAgent(
         "textwrap", judge=_blocked_repairable_forever,
         merger=lambda p: "must not merge", workdir=workdir)
     with pytest.raises(ConversionRejected, match="judge-blocked-exhausted"):
         agent.run()
-    assert agent.judge_cycles == 3
+    assert agent.judge_cycles == MAX_JUDGE_CYCLES
 
 
 def test_tool_surface_capped_at_max(workdir):
@@ -210,6 +211,140 @@ def test_static_gate_rejects_when_nothing_survives(workdir):
     ]
     with pytest.raises(ConversionRejected, match="not-convertible"):
         agent._codegen_adapter(proposals)
+
+
+# ------------------------------------------------------- adapter test stage
+
+
+def test_tool_testing_passes_clean_surface(workdir):
+    seen = []
+
+    def tester(adapter_path, proposals):
+        seen.append([p.tool_name for p in proposals])
+        return {}  # all tools pass
+
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, workdir=workdir)
+    result = agent.run()
+    assert result.verdict == "pass" and result.tools
+    assert seen == [result.tools]  # every proposed tool was tested
+    trace = (workdir / "react_trace.jsonl").read_text()
+    assert '"kind": "test"' in trace
+    assert agent.tracer.completed_stage() == "merged"  # 'tested' stage passed
+
+
+def test_failing_tool_fixed_via_bounded_mutation(workdir):
+    calls = {"n": 0}
+
+    def tester(adapter_path, proposals):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 'timeout' trips the deterministic repair (budget clamp)
+            return {proposals[0].tool_name: "timeout budget exceeded in sample call"}
+        return {}
+
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, workdir=workdir)
+    result = agent.run()
+    assert result.verdict == "pass"
+    assert result.test_cycles == 1 and result.tools  # fixed, nothing dropped
+    assert agent.timeout_s == 15
+
+
+def test_unfixable_tool_marked_failed_and_removed(workdir):
+    def tester(adapter_path, proposals):
+        # one tool always fails with an error no deterministic fix matches
+        return {p.tool_name: "RuntimeError: boom" for p in proposals
+                if p.tool_name == "textwrap_indent"}
+
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, workdir=workdir)
+    result = agent.run()
+    assert result.verdict == "pass"
+    assert "textwrap_indent" not in result.tools
+    assert len(result.tools) >= 1
+    saved = json.loads((workdir / "proposals.json").read_text())
+    assert all(p["tool_name"] != "textwrap_indent" for p in saved)
+    trace = (workdir / "react_trace.jsonl").read_text()
+    assert "mark failed and remove" in trace
+
+
+def test_all_tools_fail_rejects_not_convertible(workdir):
+    def tester(adapter_path, proposals):
+        return {p.tool_name: "RuntimeError: boom" for p in proposals}
+
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "must not merge",
+        tester=tester, workdir=workdir)
+    with pytest.raises(ConversionRejected, match="not-convertible"):
+        agent.run()
+    record = json.loads((workdir / "rejection.json").read_text())
+    assert record["reason_code"] == "not-convertible"
+
+
+def test_llm_code_fix_accepted_only_if_static_gate_passes(workdir):
+    calls = {"n": 0}
+
+    def tester(adapter_path, proposals):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {proposals[0].tool_name: "RuntimeError: boom"}
+        return {}
+
+    def bad_fixer(source, failures):
+        return source + "\neval('1')  # smuggled code execution\n"
+
+    def good_fixer(source, failures):
+        return source  # unchanged source passes the gate; re-test then passes
+
+    bad = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, fixer=bad_fixer, workdir=workdir / "bad")
+    result = bad.run()
+    # gate rejected the poisoned patch -> tool marked failed and removed,
+    # but the surviving tools still merge
+    assert result.verdict == "pass"
+    trace = (workdir / "bad" / "react_trace.jsonl").read_text()
+    assert "REJECTED by the static gate" in trace
+
+    calls["n"] = 0
+    good = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, fixer=good_fixer, workdir=workdir / "good")
+    result = good.run()
+    assert result.verdict == "pass" and result.test_cycles == 1
+    trace = (workdir / "good" / "react_trace.jsonl").read_text()
+    assert "LLM code fix accepted" in trace
+
+
+def test_no_tester_skips_stage(workdir):
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        workdir=workdir)
+    result = agent.run()
+    assert result.verdict == "pass" and result.test_cycles == 0
+
+
+def test_max_test_cycles_is_configurable(workdir):
+    """testing.max_cycles caps the test/fix loop: with a cap of 1 the
+    unfixable tool is removed after a single test round."""
+    calls = {"n": 0}
+
+    def tester(adapter_path, proposals):
+        calls["n"] += 1
+        return {p.tool_name: "RuntimeError: boom" for p in proposals
+                if p.tool_name == "textwrap_indent"}
+
+    agent = ConverterAgent(
+        "textwrap", judge=_pass_judge, merger=lambda p: "merged",
+        tester=tester, workdir=workdir, max_test_cycles=1)
+    result = agent.run()
+    assert result.verdict == "pass"
+    assert "textwrap_indent" not in result.tools
+    assert calls["n"] == 1 and result.test_cycles == 1
 
 
 def test_restart_resume_from_db_checkpoint(ctx, workdir):

@@ -146,6 +146,11 @@ class Settings:
             or models.get("fast")
             or "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
         )
+        self.tf_test_model = (
+            env.get("PROTOX_TF_TEST_MODEL")
+            or models.get("test")
+            or "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+        )
         self.tf_escalation_model = (
             env.get("PROTOX_TF_ESCALATION_MODEL")
             or models.get("escalation")
@@ -154,6 +159,20 @@ class Settings:
         # Reasoning models on large prompts can take 60-190s — the HTTP read
         # timeout must cover that or the judge flaps judge-unavailable (E-5).
         self.tf_timeout_s = float(env.get("PROTOX_TF_TIMEOUT_S") or models.get("timeout_s") or 300)
+
+        # Adapter tool-testing stage (converter): test model executes every
+        # generated tool with sample args, bounded fix loop, unfixable tools
+        # removed before the judge. testing.enabled=false skips the stage.
+        testing = file_cfg.get("testing") or {}
+        testing_enabled_env = env.get("PROTOX_TESTING_ENABLED")
+        self.testing_enabled = (
+            testing_enabled_env not in ("0", "false")
+            if testing_enabled_env is not None
+            else bool(testing.get("enabled", True))
+        )
+        self.testing_max_cycles = int(
+            env.get("PROTOX_TESTING_MAX_CYCLES") or testing.get("max_cycles", 3)
+        )
 
         # F-038 env overrides (computed profile lives in core/sizing.py)
         self.cpus_override = env.get("PROTOX_CPUS")
@@ -177,6 +196,27 @@ class Settings:
         self.log_payloads = _parse_bool_flag(
             payloads_env if payloads_env is not None else log_cfg.get("log_payloads", False),
             source="PROTOX_LOG_PAYLOADS" if payloads_env is not None else "logging.log_payloads",
+        )
+
+        # F-040 semantic tool search: embedding backend selection
+        search_cfg = file_cfg.get("search") or {}
+        self.search_backend = (
+            env.get("PROTOX_SEARCH_BACKEND") or search_cfg.get("backend") or "auto"
+        ).lower()
+        if self.search_backend not in ("auto", "tokenfactory", "local", "off"):
+            raise ConfigError(
+                f"invalid search.backend {self.search_backend!r} "
+                "(expected auto, tokenfactory, local or off)"
+            )
+        self.tf_embed_model = (
+            env.get("PROTOX_TF_EMBED_MODEL")
+            or search_cfg.get("tf_embedding_model")
+            or "Qwen/Qwen3-Embedding-8B"
+        )
+        self.local_embed_model = (
+            env.get("PROTOX_LOCAL_EMBED_MODEL")
+            or search_cfg.get("local_model")
+            or "BAAI/bge-small-en-v1.5"
         )
 
     @property

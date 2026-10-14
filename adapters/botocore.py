@@ -7,17 +7,17 @@ from __future__ import annotations
 
 from typing import Any
 
-import botocore  # introspected installed package, v1.43.112
+import botocore  # introspected installed package, v1.43.113
 from pydantic import BaseModel, ConfigDict, Field
 
-from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
+from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec, wrap_tool_result
 
 
 class BotocoreInvokeInitializersIn(BaseModel):
     """Input schema for botocore_invoke_initializers."""
 
     model_config = ConfigDict(extra="forbid")
-    session: str = Field(description="session argument")
+    session: str = Field(description="The session to initialize.")
 
 
 def botocore_invoke_initializers(ws, *, session: str) -> dict[str, Any]:
@@ -33,45 +33,14 @@ def botocore_invoke_initializers(ws, *, session: str) -> dict[str, Any]:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"invoke_initializers failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    if hasattr(result, "status_code") and hasattr(result, "text"):
-        # HTTP-response-like object (httpx/requests): return the useful parts,
-        # body capped so a huge page cannot blow up the tool result.
-        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
-
-
-class BotocoreRegisterInitializerIn(BaseModel):
-    """Input schema for botocore_register_initializer."""
-
-    model_config = ConfigDict(extra="forbid")
-    callback: str = Field(description="callback argument")
-
-
-def botocore_register_initializer(ws, *, callback: str) -> dict[str, Any]:
-    """Register an initializer function for session creation.
-
-    Limits: timeout 30s, sandboxed worker.
-    """
-    try:
-        result = botocore.register_initializer(
-            callback=callback,
-        )
-    except ToolError:
-        raise
-    except Exception as exc:  # INV-4: structured errors; traceback stays server-side
-        raise ToolError(ADAPTER_ERROR, f"register_initializer failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    if hasattr(result, "status_code") and hasattr(result, "text"):
-        # HTTP-response-like object (httpx/requests): return the useful parts,
-        # body capped so a huge page cannot blow up the tool result.
-        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
+    return wrap_tool_result(result)
 
 
 class BotocoreUnregisterInitializerIn(BaseModel):
     """Input schema for botocore_unregister_initializer."""
 
     model_config = ConfigDict(extra="forbid")
-    callback: str = Field(description="callback argument")
+    callback: str = Field(description="A callable that was previously registered")
 
 
 def botocore_unregister_initializer(ws, *, callback: str) -> dict[str, Any]:
@@ -87,11 +56,7 @@ def botocore_unregister_initializer(ws, *, callback: str) -> dict[str, Any]:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"unregister_initializer failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    if hasattr(result, "status_code") and hasattr(result, "text"):
-        # HTTP-response-like object (httpx/requests): return the useful parts,
-        # body capped so a huge page cannot blow up the tool result.
-        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
+    return wrap_tool_result(result)
 
 
 TOOLS = [
@@ -100,14 +65,6 @@ TOOLS = [
         description="Invoke all initializers for a session. (limits: timeout 30s, sandboxed)",
         input_model=BotocoreInvokeInitializersIn,
         handler=botocore_invoke_initializers,
-        timeout_s=30,
-        network=False,
-    ),
-    ToolSpec(
-        name="botocore_register_initializer",
-        description="Register an initializer function for session creation. (limits: timeout 30s, sandboxed)",
-        input_model=BotocoreRegisterInitializerIn,
-        handler=botocore_register_initializer,
         timeout_s=30,
         network=False,
     ),

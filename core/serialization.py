@@ -16,6 +16,35 @@ from core.workspace import Workspace
 INLINE_CAP_BYTES = 1 * 1024 * 1024  # >1 MB -> persist as resource ref
 HARD_CAP_BYTES = 20 * 1024 * 1024  # >20 MB -> RESULT_TOO_LARGE
 
+BYTES_TAG = "__protox_bytes_b64__"
+
+
+def encode_bytes_args(value: Any) -> Any:
+    """Make validated call args JSON-safe: bytes become single-key tag dicts.
+
+    The dispatcher validates against the tool's input model, which may coerce
+    strings to `bytes`; plain `json.dumps` cannot carry those to the sandbox
+    worker. Tagging preserves arbitrary (non-UTF-8) binary losslessly.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        return {BYTES_TAG: base64.b64encode(bytes(value)).decode()}
+    if isinstance(value, dict):
+        return {k: encode_bytes_args(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode_bytes_args(v) for v in value]
+    return value
+
+
+def decode_bytes_args(value: Any) -> Any:
+    """Worker-side inverse of encode_bytes_args: tag dicts become bytes again."""
+    if isinstance(value, dict):
+        if set(value) == {BYTES_TAG}:
+            return base64.b64decode(value[BYTES_TAG])
+        return {k: decode_bytes_args(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [decode_bytes_args(v) for v in value]
+    return value
+
 
 def _json_size(value: Any) -> int:
     return len(json.dumps(value, default=str).encode())

@@ -50,6 +50,7 @@ def test_logs_and_governance(client):
 def test_config_get_and_post(client, settings):
     body = client.get("/api/config").json()
     assert body["models"]["judge"]["value"]
+    assert body["models"]["test"]["value"] == "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
     assert body["agent_features_enabled"] is False
     assert "sizing_overrides" in body  # regression: was a 500 (ctx.sizing)
     assert body["log_payloads"] is False
@@ -57,10 +58,14 @@ def test_config_get_and_post(client, settings):
 
     resp = client.post("/api/config", json={"tf_fast_model": "nvidia/test-fast"})
     assert resp.status_code == 200 and resp.json()["ok"]
+    resp = client.post("/api/config", json={"tf_test_model": "nvidia/test-test"})
+    assert resp.status_code == 200 and resp.json()["ok"]
+    assert settings.tf_test_model == "nvidia/test-test"
     import yaml
 
     persisted = yaml.safe_load((settings.data_dir / "server.yaml").read_text())
     assert persisted["models"]["fast"] == "nvidia/test-fast"
+    assert persisted["models"]["test"] == "nvidia/test-test"
     assert persisted["logging"]["log_payloads"] is False  # written alongside, default off
 
     bad = client.post("/api/config", json={"nonsense": 1})
@@ -253,6 +258,45 @@ async def test_judge_merge_hot_registers_tools(ctx, monkeypatch):
     async with Client(mcp) as mc:
         tools = {t.name for t in await mc.list_tools()}
     assert "json_loads" in tools
+
+
+# --- F-040 semantic search route ------------------------------------------
+
+
+class _FakeProvider:
+    """Keyword-bag embeddings; vec[i] = count of _VOCAB[i] in the text."""
+
+    _VOCAB = ["image", "resize", "json", "pdf", "text"]
+
+    name = "fake:v1"
+    dims = len(_VOCAB)
+
+    def embed(self, texts):
+        return [[float(t.lower().count(w)) for w in self._VOCAB] for t in texts]
+
+
+def test_search_route_requires_query(client):
+    assert client.get("/api/search").status_code == 400
+
+
+def test_search_route_lexical_by_default(client):
+    """conftest forces search.backend=off: lexical answers, 200, empty ok."""
+    body = client.get("/api/search", params={"q": "resize image"}).json()
+    assert body["backend"] == "lexical"
+    assert any(r["name"] == "image_resize" for r in body["results"])
+    empty = client.get("/api/search", params={"q": "quantum entanglement"}).json()
+    assert empty["results"] == []
+
+
+def test_search_route_semantic_backend(client, ctx):
+    ctx.search.provider = _FakeProvider()
+    ctx.search.mark_dirty()
+    body = client.get("/api/search", params={"q": "resize an image"}).json()
+    assert body["backend"] == "fake"
+    assert body["results"][0]["name"] == "image_resize"
+    assert {"name", "description", "adapter_module", "state", "score"} <= set(
+        body["results"][0]
+    )
 
 
 @pytest.fixture(autouse=True)

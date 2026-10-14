@@ -75,6 +75,8 @@ def _wire_result(result, ws: Workspace):
 
 
 def _execute(call: dict) -> dict:
+    from core.serialization import decode_bytes_args
+
     spec = _find_tool(call["adapter_module"], call["tool_name"])
     ws = Workspace(call["workspace"])
     # Per-call operator env (ALLOWED_HOSTS etc.) applies only for this call,
@@ -85,7 +87,7 @@ def _execute(call: dict) -> dict:
     previous = {k: os.environ.get(k) for k in extra}
     os.environ.update(extra)
     try:
-        result = spec.handler(ws, **call["args"])
+        result = spec.handler(ws, **decode_bytes_args(call["args"]))
     finally:
         for k, old in previous.items():
             if old is None:

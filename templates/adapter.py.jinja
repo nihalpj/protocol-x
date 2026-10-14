@@ -13,7 +13,7 @@ from __future__ import annotations
 {% endif %}{% for sub in submodule_imports %}import {{ import_name }}.{{ sub }}  # dotted target support
 {% endfor %}from pydantic import BaseModel, ConfigDict, Field
 
-from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
+from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec, wrap_tool_result
 
 {% for fn in functions %}
 class {{ fn.model_name }}(BaseModel):
@@ -42,11 +42,7 @@ def {{ fn.tool_name }}(ws{% if fn.args %}, *, {% for arg in fn.args %}{{ arg.nam
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"{{ fn.target }} failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    if hasattr(result, "status_code") and hasattr(result, "text"):
-        # HTTP-response-like object (httpx/requests): return the useful parts,
-        # body capped so a huge page cannot blow up the tool result.
-        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
+    return wrap_tool_result(result)
 
 {% endfor %}
 TOOLS = [

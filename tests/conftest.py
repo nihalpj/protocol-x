@@ -9,6 +9,9 @@ def tmp_env(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("PROTOX_DATA_DIR", str(data_dir))
     monkeypatch.setenv("PROTOX_WORKSPACE", str(workspace))
+    # F-040: keep tests off embedding backends by default (no network/model
+    # downloads from the background sync); search tests opt in explicitly.
+    monkeypatch.setenv("PROTOX_SEARCH_BACKEND", "off")
     return {"data_dir": data_dir, "workspace": workspace}
 
 

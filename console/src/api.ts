@@ -214,6 +214,22 @@ export interface Snippets {
   generic_http: GenericHttpSnippet;
 }
 
+// ---------- semantic tool search (F-040) ----------
+
+export interface SearchHit {
+  name: string;
+  description: string;
+  adapter_module: string;
+  state: ToolState;
+  score: number;
+}
+
+export interface SearchResult {
+  query: string;
+  backend: string; // "tokenfactory" | "local" | "lexical"
+  results: SearchHit[];
+}
+
 // ---------- client ----------
 
 const TOKEN_KEY = "protox.token";
@@ -345,6 +361,8 @@ export const api = {
       "/api/builder/drafts/clear",
       { method: "POST", body: "{}" },
     ),
+  search: (q: string, limit = 20) =>
+    request<SearchResult>(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 };
 
 // ---------- polling hook ----------

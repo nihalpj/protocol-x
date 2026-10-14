@@ -2,6 +2,11 @@
 against inv-rubric v1.2. Fail closed (INV-6): an unreachable judge or an
 unparseable verdict means nothing registers.
 
+The judge is the FINAL gate: adapters reach it after the converter's
+tool-testing/fix stage (test model smoke tests, bounded fix loop), and the
+whole package adapter is reviewed in ONE structured-output request whenever
+the input fits the token budget (MAX_SINGLE_REQUEST_TOKENS).
+
 Every verdict is persisted as an audit_events(kind='verdict') row with the
 model, prompt hash, and rubric version (AC-F019-05).
 """

@@ -104,3 +104,48 @@ class TokenFactoryClient:
                 time.sleep(min(2**attempt, 8))  # exponential backoff
         log.error("AI inference failed after %d attempts: %s", self.max_retries, last_exc)
         raise InferenceError(f"inference failed after {self.max_retries} attempts: {last_exc}")
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """OpenAI-compatible embeddings call. One vector per input text."""
+        if not texts:
+            return []
+        body = {"model": model, "input": texts}
+        log.info(
+            "AI embeddings request -> %s/embeddings model=%s texts=%d",
+            self.endpoint, model, len(texts),
+        )
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries):
+            t0 = time.monotonic()
+            try:
+                resp = self._client.post(f"{self.endpoint}/embeddings", json=body)
+                duration_ms = (time.monotonic() - t0) * 1000
+                if resp.status_code != 200:
+                    log.warning(
+                        "Embeddings endpoint returned %s in %.0fms (attempt %d/%d): %s",
+                        resp.status_code, duration_ms, attempt + 1, self.max_retries,
+                        resp.text[:500],
+                    )
+                    raise InferenceError(f"endpoint returned {resp.status_code}: {resp.text[:200]}")
+                data = resp.json()
+                items = data["data"]
+                vectors = [items[i]["embedding"] for i in range(len(items))]
+                if len(vectors) != len(texts):
+                    raise InferenceError(
+                        f"embeddings count mismatch: {len(vectors)} vectors for {len(texts)} texts"
+                    )
+                log.info(
+                    "AI embeddings response <- model=%s vectors=%d dims=%d duration_ms=%.0f",
+                    data.get("model", model), len(vectors),
+                    len(vectors[0]) if vectors else 0, duration_ms,
+                )
+                return vectors
+            except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, InferenceError) as exc:
+                last_exc = exc
+                log.warning(
+                    "Embeddings request failed (attempt %d/%d): %s",
+                    attempt + 1, self.max_retries, fmt_obj(exc, limit=300),
+                )
+                time.sleep(min(2**attempt, 8))
+        log.error("Embeddings failed after %d attempts: %s", self.max_retries, last_exc)
+        raise InferenceError(f"embeddings failed after {self.max_retries} attempts: {last_exc}")

@@ -62,9 +62,28 @@ _STR_ANNOTATIONS = {"URL", "URLTypes", "ProxyTypes", "PathLike"}
 
 # Annotation names for rich object params we cannot expose honestly as schema
 # scalars (auth callables, byte streams, request bodies) — drop the parameter.
+# A *required* param with one of these annotations makes the whole function
+# not-convertible: it could never be called through the JSON boundary.
 _DROP_ANNOTATIONS = {
     "AuthTypes", "RequestContent", "RequestData", "RequestFiles",
     "SyncByteStream", "AsyncByteStream", "Callable", "CertTypes",
+    "type", "Convertor", "Message", "Descriptor", "DescriptorProto",
+    "ModuleType", "ForwardRef",
+}
+
+# Individual functions that can never work over JSON even though their
+# signatures look convertible (they need live framework objects at runtime,
+# e.g. Starlette convertor instances or typing internals). Keyed by top-level
+# package name. Shipping them yields wrong-but-successful answers (ISS-7).
+_NOT_CONVERTIBLE_TARGETS: dict[str, set[str]] = {
+    "typing_extensions": {
+        "get_args", "assert_type", "get_original_bases", "is_typeddict",
+        "get_protocol_members", "evaluate_forward_ref", "get_annotations",
+    },
+    "typing_inspection": {
+        "inspect_annotation", "get_literal_values", "is_union_origin",
+    },
+    "starlette": {"replace_params"},
 }
 
 
@@ -133,6 +152,103 @@ py_schema_type = _py_type
 literal_default = _literal_default
 
 
+# --- detailed descriptions (F-040) -------------------------------------------
+# Tool and parameter descriptions are mined from the package's own docstrings:
+# full summary paragraph for the tool, per-parameter docs where the docstring
+# has them. Deterministic — no extra LLM call, and the detail lands in
+# tool_embeddings so semantic search can match on parameter language.
+
+DESC_MAX = 500
+ARG_DESC_MAX = 200
+
+_PARAM_HEADER_RE = re.compile(r"^(\s*)(\*{0,2}\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
+_SPHINX_PARAM_RE = re.compile(r":param\s+(\w+)\s*:\s*(.+)")
+_PARAMS_SECTIONS = {"Parameters", "Args:", "Arguments:"}
+_SECTION_ENDS = {
+    "Returns", "Returns:", "Raises", "Raises:", "Yields", "Yields:",
+    "Examples", "Examples:", "Notes", "Notes:", "See Also", "Attributes",
+}
+
+
+def sanitize_description(text: str) -> str:
+    """Single line, free of characters that would break the generated
+    `description="..."` literal (quotes, braces, backslashes)."""
+    return re.sub(r"\s+", " ", re.sub(r'["{}\\]', "", text)).strip()
+
+
+def parse_docstring(doc: str) -> tuple[str, dict[str, str]]:
+    """Split a docstring into (summary paragraph, per-parameter docs).
+
+    Understands numpy ("Parameters" + `name : type` blocks), Google ("Args:")
+    and Sphinx (":param name:") styles. Multi-line parameter docs are joined;
+    unknown styles yield just the summary.
+    """
+    summary_lines: list[str] = []
+    first = True
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if summary_lines:
+                break
+            continue
+        # numpy-style docstrings open with the signature ("asarray(a, ...)")
+        if first and re.fullmatch(r"[\w.]+\(.*\)\s*", stripped):
+            first = False
+            continue
+        first = False
+        if stripped in _PARAMS_SECTIONS:
+            break
+        summary_lines.append(stripped)
+    summary = " ".join(summary_lines)
+
+    params: dict[str, list[str]] = {}
+
+    def _add(name: str, text: str) -> None:
+        name = name.lstrip("*")
+        if text:
+            params.setdefault(name, []).append(text)
+        else:
+            params.setdefault(name, [])
+
+    for sm in _SPHINX_PARAM_RE.finditer(doc):
+        _add(sm.group(1), sm.group(2).strip())
+
+    in_params = False
+    header_indent: int | None = None
+    current: str | None = None
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped in _PARAMS_SECTIONS:
+            in_params = True
+            header_indent = None
+            current = None
+            continue
+        if not in_params:
+            continue
+        if stripped in _SECTION_ENDS or set(stripped) == {"-"}:
+            if stripped in _SECTION_ENDS:
+                in_params = False
+            current = None
+            continue
+        if not stripped:
+            continue
+        m = _PARAM_HEADER_RE.match(line)
+        indent = len(line) - len(line.lstrip())
+        if m and (header_indent is None or indent == header_indent):
+            # numpy: `name : type` (text after ':' is the type; the description
+            # is the indented block below). google: `name (type): description`.
+            header_indent = indent
+            current = m.group(2).lstrip("*")
+            is_google = "(" in line.split(":")[0]
+            params.setdefault(current, [])
+            if is_google and m.group(3):
+                params[current].append(m.group(3).strip())
+        elif current is not None and (header_indent is None or indent > header_indent):
+            params[current].append(stripped)
+
+    return summary, {name: " ".join(parts) for name, parts in params.items()}
+
+
 def introspect_package(package: str, max_candidates: int = 100) -> list[FunctionCandidate]:
     """Function surface of the *installed* package only (E-3)."""
     try:
@@ -142,8 +258,11 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
             f"package '{package}' is not installed server-side — install it first"
         ) from exc
     candidates: list[FunctionCandidate] = []
+    denylist = _NOT_CONVERTIBLE_TARGETS.get(module.__name__, set())
     for name, member in inspect.getmembers(module):
         if name.startswith("_"):
+            continue
+        if name in denylist:
             continue
         target = None
         if inspect.isfunction(member) or inspect.isbuiltin(member):
@@ -154,17 +273,26 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
             sig = inspect.signature(member)
         except (ValueError, TypeError):
             continue
+        doc_full = inspect.getdoc(member) or ""
+        summary, param_docs = parse_docstring(doc_full)
         args = []
         skipped: list[str] = []
+        convertible = True
         for pname, param in sig.parameters.items():
             if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
                 continue  # no *args/**kwargs pass-through — fixed wrappers only (INV-1)
             type_name = _py_type(param.annotation)
             if type_name is None:
-                # Rich object param (auth callable, byte stream, body type) —
-                # not representable in a JSON schema; drop it. All such
-                # params in supported packages carry defaults, so dropping
-                # is runtime-safe.
+                if param.default is inspect.Parameter.empty:
+                    # Required rich-object param (callable, type object,
+                    # message) — can never cross the JSON boundary, so the
+                    # function itself is not convertible.
+                    convertible = False
+                    break
+                # Optional rich object param (auth callable, byte stream,
+                # body type) — not representable in a JSON schema; drop it.
+                # The package's own default applies, so dropping is
+                # runtime-safe.
                 skipped.append(pname)
                 continue
             default_repr: str | None = None
@@ -186,21 +314,26 @@ def introspect_package(package: str, max_candidates: int = 100) -> list[Function
                     type_name = default_type
             if default_repr == "None":
                 type_name = f"{type_name} | None"
+            arg_doc = sanitize_description(
+                param_docs.get(pname) or f"parameter {pname}"
+            )[:ARG_DESC_MAX]
             args.append(
                 {
                     "name": pname,
                     "type": type_name,
                     "default": default_repr,
                     "positional_only": param.kind is inspect.Parameter.POSITIONAL_ONLY,
-                    "description": f"parameter {pname}",
+                    "description": arg_doc,
                 }
             )
-        doc = (inspect.getdoc(member) or "").splitlines()
+        if not convertible:
+            continue
+        doc = sanitize_description(summary)[:DESC_MAX] or f"{package}.{target}"
         candidates.append(
             FunctionCandidate(
                 name=target,
                 signature=str(sig),
-                doc=doc[0] if doc else f"{package}.{target}",
+                doc=doc,
                 args=args,
                 skipped=skipped,
             )
@@ -307,7 +440,7 @@ class Builder:
                     f"{_safe_name(c.name).title().replace('_', '')}In"
                 ),
                 "target": c.name,
-                "description": c.doc[:200],
+                "description": c.doc,
                 "args": c.args,
                 "skipped": c.skipped,
             }
@@ -391,6 +524,7 @@ class Builder:
             for row in self.ctx.store.tools.list(state="draft"):
                 if row["adapter_module"] == module_name:
                     self.ctx.registry.set_state(row["name"], "blocked")
+            self.ctx.search.mark_dirty()
             return MergeResult(state="blocked", verdict=verdict)
 
         # pass / pass-with-warnings -> auto-merge (UF-01 step 10a/10b)
@@ -415,6 +549,8 @@ class Builder:
             "merge", "server",
             {"module": module_name, "verdict": verdict.verdict, "warnings": verdict.findings, "tools": tools},
         )
+        # F-040: insert the new tools into tool_embeddings right away
+        self.ctx.kick_search_sync()
         return MergeResult(state="merged", verdict=verdict, tools=tools)
 
     def _record_generated_version(self, module_name: str, provenance: str = "generated") -> int:

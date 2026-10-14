@@ -33,4 +33,14 @@ models:                       # Nebius Token Factory (agent inference only; INV-
   endpoint: https://api.tokenfactory.nebius.com/v1
   judge: nvidia/Nemotron-3-Ultra-550b-a55b
   fast: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B
+  test: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B   # adapter tool-testing stage
   escalation: nvidia/Nemotron-3-Ultra-550b-a55b
+
+testing:                      # converter adapter tool-testing stage (before the judge)
+  enabled: true               # false skips sample-call testing entirely
+  max_cycles: 3               # test -> fix -> re-test rounds; still-failing tools are removed
+
+search:                       # F-040 semantic tool search over the registry
+  backend: auto               # auto | tokenfactory | local | off
+  tf_embedding_model: Qwen/Qwen3-Embedding-8B   # Token Factory embeddings model
+  local_model: BAAI/bge-small-en-v1.5        # fastembed fallback (downloads once)

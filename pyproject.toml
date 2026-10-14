@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.28",
     "uvicorn>=0.34",
     "starlette>=0.45",
+    "fastembed>=0.5",
 ]
 
 [project.scripts]

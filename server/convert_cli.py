@@ -15,8 +15,10 @@ from pathlib import Path
 from agents.converter_agent import (
     ConversionRejected,
     ConverterAgent,
+    llm_fixer,
     llm_proposer,
     llm_repairer,
+    llm_tester,
     production_judge,
     production_merger,
 )
@@ -75,14 +77,18 @@ def run_convert(package: str, settings, *, focus: str | None = None,
         merger=production_merger(ctx, mod_name),
         repairer=llm_repairer(settings),
         proposer=llm_proposer(settings),
+        tester=llm_tester(settings) if settings.testing_enabled else None,
+        fixer=llm_fixer(settings),
         workdir=workdir, resume=resume, stream=stream,
-        store=store, run_id=run_id, resume_stage=resume_stage)
+        store=store, run_id=run_id, resume_stage=resume_stage,
+        max_test_cycles=settings.testing_max_cycles)
     try:
         result = agent.run()
     except ConversionRejected as exc:
         code = str(exc).split(":", 1)[0]
         store.runs.close(run_id, "rejected", reason_code=code,
-                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles)
+                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles,
+                         test_cycles=agent.test_cycles)
         print(f"\nREJECTED: {exc}")
         print(f"rejection record: {agent.workdir / 'rejection.json'} (run {run_id})")
         return 2
@@ -90,17 +96,19 @@ def run_convert(package: str, settings, *, focus: str | None = None,
         # reason_code vocabulary is rejection-only (m003); unexpected errors
         # close with NULL — the exception detail lives in the workdir trace.
         store.runs.close(run_id, "error",
-                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles)
+                         fix_cycles=agent.fix_cycles, judge_cycles=agent.judge_cycles,
+                         test_cycles=agent.test_cycles)
         print(f"\nERROR: {type(exc).__name__}: {exc}")
         print(f"workdir kept for inspection/resume: {agent.workdir} (run {run_id})")
         return 2
 
     store.runs.close(run_id, "merged",
-                     fix_cycles=result.fix_cycles, judge_cycles=result.judge_cycles)
+                     fix_cycles=result.fix_cycles, judge_cycles=result.judge_cycles,
+                     test_cycles=result.test_cycles)
     if not stream:
         agent.tracer.print_all()
     print(f"\nverdict={result.verdict} fix_cycles={result.fix_cycles} "
-          f"judge_cycles={result.judge_cycles}")
+          f"judge_cycles={result.judge_cycles} test_cycles={result.test_cycles}")
     print(f"tools: {', '.join(result.tools)}")
     print(f"trace: {agent.workdir / 'react_trace.jsonl'} (run {run_id})")
     return 0

@@ -610,10 +610,42 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
         ctx.audit.record("wrapper", "mcp-operator", {
             "event": "remove", "module": module, "tools": quarantined,
         })
+        ctx.search.remove_module(module)  # F-040: drop its stale vectors
         return {
             "state": "removed",
             "module": module,
             "tools_quarantined": quarantined,
+        }
+
+    async def tool_search(query: str, limit: int = 10) -> dict:
+        """Semantic search over every registered tool (F-040): describe what
+        you want to do in plain words ("resize a picture", "parse a date")
+        and get the best-matching tools ranked by vector similarity, with
+        name, description, module, state and score. Non-live tools (draft /
+        blocked / quarantined) are included and flagged by state so you can
+        see why they are not callable. Uses embeddings when a backend is
+        configured (Token Factory default, local model fallback); degrades
+        to keyword matching (backend="lexical") when no embedding backend
+        is reachable. Prefer this over guessing tool names."""
+        try:
+            _guard(ctx, "tool_search")
+            if not query.strip():
+                raise ToolError(VALIDATION_ERROR, "query must be non-empty")
+            limit = max(1, min(int(limit), 50))
+            outcome = await asyncio.to_thread(
+                ctx.search.search,
+                query,
+                ctx.registry.list_tools(include_non_live=True),
+                limit,
+            )
+        except ToolError as exc:
+            raise to_mcp_error(exc) from exc
+        except Exception as exc:
+            raise to_mcp_error(exc) from exc
+        return {
+            "query": query,
+            "backend": outcome.backend,
+            "results": outcome.results,
         }
 
     schemas: dict[str, dict] = {
@@ -699,6 +731,17 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
             },
             "required": ["module"],
         },
+        "tool_search": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "plain-words description of what you "
+                                         "want to do"},
+                "limit": {"type": "integer",
+                          "description": "max results (1-50, default 10)"},
+            },
+            "required": ["query"],
+        },
     }
     for name, fn in (
         ("package_install", package_install),
@@ -710,6 +753,7 @@ def register_operator_tools(mcp: FastMCP, ctx: AppContext) -> None:
         ("wrapper_load", wrapper_load),
         ("wrapper_list", wrapper_list),
         ("wrapper_remove", wrapper_remove),
+        ("tool_search", tool_search),
     ):
         mcp.add_tool(FunctionTool(
             name=name,

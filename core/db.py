@@ -221,12 +221,14 @@ class RunRepo:
         reason_code: str | None = None,
         fix_cycles: int | None = None,
         judge_cycles: int | None = None,
+        test_cycles: int | None = None,
     ) -> None:
         self.conn.execute(
             """UPDATE conversion_runs
-               SET outcome=?, reason_code=?, fix_cycles=?, judge_cycles=?, ended_ts=?
+               SET outcome=?, reason_code=?, fix_cycles=?, judge_cycles=?, test_cycles=?,
+                   ended_ts=?
                WHERE id=?""",
-            (outcome, reason_code, fix_cycles, judge_cycles, _now(), run_id),
+            (outcome, reason_code, fix_cycles, judge_cycles, test_cycles, _now(), run_id),
         )
 
     def get(self, run_id: int) -> dict | None:
@@ -364,6 +366,55 @@ class CheckpointRepo:
         return {**dict(row), "payload": json.loads(row["payload_json"])}
 
 
+class EmbeddingRepo:
+    """tool_embeddings: F-040 semantic search vectors (float32 LE blobs)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def upsert(
+        self,
+        name: str,
+        adapter_module: str,
+        text: str,
+        content_hash: str,
+        model: str,
+        embedding: bytes,
+        dims: int,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO tool_embeddings(name, adapter_module, text, content_hash,
+                                           model, dims, embedding, updated_ts)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                 adapter_module=excluded.adapter_module, text=excluded.text,
+                 content_hash=excluded.content_hash, model=excluded.model,
+                 dims=excluded.dims, embedding=excluded.embedding,
+                 updated_ts=excluded.updated_ts""",
+            (name, adapter_module, text, content_hash, model, dims, embedding, _now()),
+        )
+
+    def get(self, name: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM tool_embeddings WHERE name=?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def all(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM tool_embeddings ORDER BY name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete(self, name: str) -> None:
+        self.conn.execute("DELETE FROM tool_embeddings WHERE name=?", (name,))
+
+    def delete_module(self, adapter_module: str) -> None:
+        self.conn.execute(
+            "DELETE FROM tool_embeddings WHERE adapter_module=?", (adapter_module,)
+        )
+
+
 class Store:
     """One handle over the DB: connection + all DAOs."""
 
@@ -376,6 +427,7 @@ class Store:
         self.runs = RunRepo(self.conn)
         self.incidents = IncidentRepo(self.conn)
         self.checkpoints = CheckpointRepo(self.conn)
+        self.embeddings = EmbeddingRepo(self.conn)
 
     def close(self) -> None:
         self.conn.close()

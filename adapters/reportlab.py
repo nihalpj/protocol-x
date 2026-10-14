@@ -10,7 +10,7 @@ from typing import Any
 import reportlab  # introspected installed package, v5.0.1
 from pydantic import BaseModel, ConfigDict, Field
 
-from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
+from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec, wrap_tool_result
 
 
 class ReportlabCmpIn(BaseModel):
@@ -21,21 +21,21 @@ class ReportlabCmpIn(BaseModel):
     b: str = Field(description="parameter b")
 
 
-def reportlab_cmp(ws, a: str, b: str) -> dict[str, Any]:
+def reportlab_cmp(ws, *, a: str, b: str) -> dict[str, Any]:
     """reportlab.cmp
 
     Limits: timeout 30s, sandboxed worker.
     """
     try:
         result = reportlab.cmp(
-            a,
-            b,
+            a=a,
+            b=b,
         )
     except ToolError:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"cmp failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
+    return wrap_tool_result(result)
 
 
 TOOLS = [

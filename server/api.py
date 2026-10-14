@@ -34,6 +34,7 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                 "agent_features_enabled": ctx.settings.agent_features_enabled,
                 "judge_model": ctx.settings.tf_judge_model,
                 "fast_model": ctx.settings.tf_fast_model,
+                "test_model": ctx.settings.tf_test_model,
                 "tf_endpoint": ctx.settings.tf_endpoint,
                 "workspace": str(ctx.workspace.root),
                 "host": ctx.settings.host,
@@ -92,6 +93,7 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
                     "endpoint": {"value": s.tf_endpoint, "source": "env/config"},
                     "judge": {"value": s.tf_judge_model, "source": "env/config"},
                     "fast": {"value": s.tf_fast_model, "source": "env/config"},
+                    "test": {"value": s.tf_test_model, "source": "env/config"},
                 },
                 "agent_features_enabled": s.agent_features_enabled,
                 "log_payloads": s.log_payloads,
@@ -104,8 +106,8 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
     async def api_config_post(req: Request) -> JSONResponse:
         body = await req.json()
         allowed = {
-            "tf_endpoint", "tf_judge_model", "tf_fast_model", "preset",
-            "log_payloads", "tf_api_key",
+            "tf_endpoint", "tf_judge_model", "tf_fast_model", "tf_test_model",
+            "preset", "log_payloads", "tf_api_key",
         }
         updates = {k: v for k, v in body.items() if k in allowed}
         if not updates:
@@ -124,6 +126,8 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
             s.tf_judge_model = str(updates["tf_judge_model"])
         if "tf_fast_model" in updates:
             s.tf_fast_model = str(updates["tf_fast_model"])
+        if "tf_test_model" in updates:
+            s.tf_test_model = str(updates["tf_test_model"])
         if "log_payloads" in updates:
             s.log_payloads = updates["log_payloads"]
         key_rotated = False
@@ -148,6 +152,7 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
         models = dict(existing.get("models") or {})
         models.update({
             "endpoint": s.tf_endpoint, "judge": s.tf_judge_model, "fast": s.tf_fast_model,
+            "test": s.tf_test_model,
         })
         if key_rotated:
             # write-only: persisted once at rotation, never echoed back
@@ -376,6 +381,10 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
             "console-operator",
             {"event": "drafts-cleared", "tools": cleared_tools, "files_deleted": files_deleted},
         )
+        for names in modules.values():  # F-040: drop vectors for cleared drafts
+            for name in names:
+                ctx.store.embeddings.delete(name)
+        ctx.search.mark_dirty()
         log.info("drafts cleared: %d tools, adapter files removed: %s", cleared_tools, files_deleted)
         return JSONResponse(
             {"state": "cleared", "tools_cleared": cleared_tools, "files_deleted": files_deleted}
@@ -449,6 +458,21 @@ def register_api_routes(mcp, ctx: AppContext) -> None:
             return JSONResponse({"error": "no tools for module"}, status_code=404)
         return JSONResponse(
             {"module": module, "format": render_tool_format(tools, str(ctx.workspace.root))}
+        )
+
+    @mcp.custom_route("/api/search", methods=["GET"])
+    async def api_search(req: Request) -> JSONResponse:
+        """F-040 semantic tool search for the console registry browser."""
+        query = req.query_params.get("q", "").strip()
+        if not query:
+            return JSONResponse({"error": "missing query parameter q"}, status_code=400)
+        try:
+            limit = max(1, min(int(req.query_params.get("limit", "10")), 50))
+        except ValueError:
+            limit = 10
+        outcome = ctx.search.search(query, ctx.registry.list_tools(include_non_live=True), limit)
+        return JSONResponse(
+            {"query": query, "backend": outcome.backend, "results": outcome.results}
         )
 
     @mcp.custom_route("/{path:path}", methods=["GET"])

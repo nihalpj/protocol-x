@@ -26,9 +26,15 @@ Pipeline:
   4. renders the agent-facing tool-call format via
      `templates/tool_call_format.jinja` and runs a bounded AUTO-FIX loop
      (deterministic, then LLM repair tier; <= MAX_FIX_CYCLES, AC-F029-06),
-  5. passes the AI-judge gate with a bounded repair loop on `blocked`
-     verdicts (deterministic, then LLM repair tier; <= MAX_JUDGE_CYCLES,
-     E-10), then auto-merges (PRD v1.4).
+  5. TESTS the adapter: the test model (settings.tf_test_model) generates
+     sample arguments per tool and every handler is executed; failures go
+     through a bounded fix loop (deterministic mutations, LLM directive,
+     LLM code patch re-gated by the static gate; <= max_test_cycles, config
+     testing.max_cycles, default MAX_TEST_CYCLES) —
+     tools still failing are marked failed and REMOVED from the surface,
+  6. passes the AI-judge gate (one structured-output request for the whole
+     package) with a bounded repair loop on `blocked` verdicts
+     (<= MAX_JUDGE_CYCLES, E-10), then auto-merges (PRD v1.4).
 
 ReAct plumbing (trace persistence, checkpoints) comes from `agents/react.py`:
 every step is a Thought -> Action -> Observation triple, persisted to
@@ -55,6 +61,9 @@ Standalone demo usage (stub seams, no server):
                      Nemotron Ultra repairer; omit = deterministic only)
     --proposer {llm-demo}
                      demo LLM proposal fallback for zero-surface packages
+    --tester {llm-demo}
+                     demo adapter tester: sample-arg execution of every tool;
+                     omit = skip the test stage
     --demo-fault     break the first tool-call-format render so the
                      auto-fix loop visibly repairs it (cycle 1/3)
     --workdir DIR    artifact + checkpoint directory (default: fresh tmp)
@@ -65,6 +74,8 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
+import importlib.util
 import inspect
 import itertools
 import json
@@ -89,27 +100,97 @@ except ImportError:  # direct script execution: python3 agents/converter_agent.p
     from react import ReActTracer  # type: ignore[no-redef]
 
 try:
-    # Honest annotation/default projection shared with the builder (F-019).
-    from agents.codegen import literal_default, py_schema_type
+    # Honest annotation/default projection shared with the builder (F-019),
+    # plus docstring mining for detailed tool/parameter descriptions (F-040).
+    from agents.codegen import (
+        ARG_DESC_MAX,
+        DESC_MAX,
+        literal_default,
+        parse_docstring,
+        py_schema_type,
+        sanitize_description,
+    )
 except ImportError:  # standalone demo runs without the server tree
 
-    def py_schema_type(annotation) -> str | None:  # type: ignore[no-redef]
+    def py_schema_type(annotation) -> str | None:
         if annotation is inspect.Parameter.empty:
             return "str"
         return _SIMPLE_ANNOTATIONS.get(annotation)
 
-    def literal_default(value) -> str | None:  # type: ignore[no-redef]
+    def literal_default(value) -> str | None:
         if isinstance(value, (str, int, float, bool, type(None))):
             return repr(value)
         return None
+
+    DESC_MAX = 500
+    ARG_DESC_MAX = 200
+
+    def sanitize_description(text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r'["{}\\]', "", text)).strip()
+
+    def parse_docstring(doc: str) -> tuple[str, dict[str, str]]:
+        return (doc.split("\n")[0] if doc else ""), {}
 
 from core.logging import fmt_obj, get_logger
 
 log = get_logger("converter")
 
+
+def resolve_import_name(package: str) -> str:
+    """Importable top-level module for a PyPI project name.
+
+    Project names are not import names (pyjwt -> jwt, pyyaml -> yaml,
+    python-dotenv -> dotenv) and hyphens are never importable, so resolve
+    through the installed distribution's top_level.txt, falling back to the
+    normalized name."""
+    norm = re.sub(r"[^a-z0-9]+", "_", package.lower()).strip("_")
+    for cand in (package, norm):
+        if not cand.isidentifier():
+            continue
+        try:
+            if importlib.util.find_spec(cand) is not None:
+                return cand
+        except (ImportError, ValueError):
+            continue
+    try:
+        top = importlib.metadata.distribution(package).read_text("top_level.txt")
+    except Exception:
+        top = None
+    names = [n.strip() for n in (top or "").splitlines() if n.strip()]
+    if not names:
+        # No top_level.txt (e.g. protobuf -> google.protobuf): derive the
+        # import roots from the distribution's recorded file list.
+        try:
+            files = importlib.metadata.files(package) or []
+        except Exception:
+            files = []
+        names = sorted({f.parts[0] for f in files
+                        if f.parts and f.parts[0].isidentifier()})
+    if norm in names:
+        return norm
+    for cand in names:  # skip private/extension modules like pyyaml's _yaml
+        if cand.startswith("_") or not cand.isidentifier():
+            continue
+        try:
+            if importlib.util.find_spec(cand) is None:
+                continue
+        except (ImportError, ValueError):
+            continue
+        if norm != cand:
+            # Namespace roots hide the real package one level down
+            # (protobuf -> google.protobuf).
+            try:
+                if importlib.util.find_spec(f"{cand}.{norm}") is not None:
+                    return f"{cand}.{norm}"
+            except (ImportError, ValueError):
+                pass
+        return cand
+    return names[0] if names else norm
+
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 MAX_FIX_CYCLES = 3      # circuit breaker: format auto-fix loop (AC-F029-06)
-MAX_JUDGE_CYCLES = 3    # circuit breaker: blocked-verdict repair loop (E-10)
+MAX_JUDGE_CYCLES = 2    # circuit breaker: blocked-verdict repair loop (E-10)
+MAX_TEST_CYCLES = 3     # circuit breaker: adapter test + fix loop
 MAX_TOOLS = 50          # tool-surface proposal cap (top-50 most-used functions)
 MAX_SUBMODULES = 20     # submodule scan cap for pure-namespace packages
 MAX_CANDIDATES = 200    # introspection cap before usage ranking
@@ -121,7 +202,7 @@ JUDGE_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"   # AI-judge + codegen/repair 
 FAST_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"  # converter / repair fast loops
 
 _SIMPLE_ANNOTATIONS = {str: "str", int: "int", float: "float", bool: "bool"}
-_STAGES = ["imported", "proposed", "codegen", "format", "merged"]
+_STAGES = ["imported", "proposed", "codegen", "format", "tested", "merged"]
 
 
 def _json_prop(py_type: str) -> dict:
@@ -268,15 +349,17 @@ class ConversionResult:
     fix_cycles: int
     judge_cycles: int
     verdict: str
+    test_cycles: int = 0
 
 
 class ConverterAgent:
     def __init__(self, package: str, focus: str | None = None,
                  demo_fault: bool = False, judge=None, merger=None,
-                 repairer=None, proposer=None,
+                 repairer=None, proposer=None, tester=None, fixer=None,
                  workdir: str | Path | None = None, resume: bool = False,
                  stream: bool = False, store=None, run_id: int | None = None,
-                 resume_stage: str | None = None):
+                 resume_stage: str | None = None,
+                 max_test_cycles: int = MAX_TEST_CYCLES):
         self.package = package
         self.focus = focus
         self.demo_fault = demo_fault
@@ -286,13 +369,20 @@ class ConverterAgent:
         # LLM recovery seams (best approach available — automatic, never opt-in).
         # repairer(findings, proposals, context) -> directive dict | None
         # proposer(module) -> list[ToolProposal]
+        # tester(adapter_path, proposals) -> {tool_name: error} (failures only)
+        # fixer(adapter_source, failures) -> patched source | None (re-gated on accept)
         self.repairer = repairer
         self.proposer = proposer
+        self.tester = tester
+        self.fixer = fixer
+        self.max_test_cycles = max_test_cycles
         # DB seams (optional): conversion_runs row + durable checkpoints (AC-P7-05).
         self.store = store
         self.run_id = run_id
         self.fix_cycles = 0
         self.judge_cycles = 0
+        self.test_cycles = 0
+        self._resolved_import: str | None = None
         self.network = False
         self.timeout_s = 30
         self.env = SandboxedEnvironment(
@@ -330,8 +420,8 @@ class ConverterAgent:
         else:
             mod = self.tracer.act(
                 f"'{self.package}' must become sandboxed tools; start from the installed package",
-                f"importlib.import_module({self.package!r})",
-                lambda: importlib.import_module(self.package))
+                f"importlib.import_module({self._import_name()!r})",
+                lambda: importlib.import_module(self._import_name()))
             self._checkpoint("imported")
 
             proposals: list[ToolProposal] = []
@@ -367,6 +457,10 @@ class ConverterAgent:
                 lambda: self._render_format_with_fixes(proposals))
             self._checkpoint("format")
 
+        if self.tester and not self._done("tested"):
+            self._test_with_fixes(adapter_path, proposals)
+            self._checkpoint("tested")
+
         verdict = self._judge_with_repairs(adapter_path, proposals)
         log.info("converter: final verdict for %s: %s", self.package, verdict)
         merge_note = self.tracer.act(
@@ -382,7 +476,8 @@ class ConverterAgent:
             tools=[p.tool_name for p in proposals],
             fix_cycles=self.fix_cycles,
             judge_cycles=self.judge_cycles,
-            verdict=verdict)
+            verdict=verdict,
+            test_cycles=self.test_cycles)
 
     # ------------------------------------------------------- step: propose
     def _propose(self, mod) -> list[ToolProposal]:
@@ -396,11 +491,15 @@ class ConverterAgent:
             if projected is None:
                 continue
             args, skipped = projected
-            doc = (inspect.getdoc(fn) or f"{target}() from {self.package}").split("\n")[0]
+            summary, _param_docs = parse_docstring(inspect.getdoc(fn) or "")
+            description = (
+                sanitize_description(summary)[:DESC_MAX]
+                or f"{target}() from {self.package}"
+            )
             out.append(ToolProposal(
                 tool_name=f"{prefix}_{target.replace('.', '_')}",
                 target=target,
-                description=self._sanitize(doc)[:120],
+                description=description,
                 args=args,
                 skipped=skipped))
             if len(out) >= MAX_TOOLS:
@@ -423,6 +522,7 @@ class ConverterAgent:
             params = list(inspect.signature(fn).parameters.values())
         except (ValueError, TypeError):
             return None
+        _summary, param_docs = parse_docstring(inspect.getdoc(fn) or "")
         args: list[Arg] = []
         skipped: list[str] = []
         for p in params:
@@ -450,8 +550,11 @@ class ConverterAgent:
                 type_name = f"{type_name} | None"
             if p.kind is p.POSITIONAL_ONLY and skipped:
                 return None                       # positional order would break
+            arg_doc = sanitize_description(
+                param_docs.get(p.name) or f"{p.name} argument"
+            )[:ARG_DESC_MAX]
             args.append(Arg(name=p.name, type=type_name,
-                            description=f"{p.name} argument", default=default,
+                            description=arg_doc, default=default,
                             positional_only=p.kind is p.POSITIONAL_ONLY))
         return args, skipped
 
@@ -469,7 +572,7 @@ class ConverterAgent:
             code = tpl.render(
                 rubric_version=RUBRIC_VERSION,
                 module_name=self._mod_name(),
-                import_name=self.package,
+                import_name=self._import_name(),
                 package_version=self._version(),
                 functions=proposals,
                 submodule_imports=sorted(
@@ -724,6 +827,92 @@ class ConverterAgent:
                 changed = True
         return changed
 
+    # ------------------------------------- step: adapter test + fix loop
+    def _test_with_fixes(self, adapter_path: Path,
+                         proposals: list[ToolProposal]) -> None:
+        """Test every tool with generated sample calls (test model), fix the
+        adapter and re-test in a bounded loop (<= self.max_test_cycles, config
+        testing.max_cycles). Tools still failing when the loop ends are marked
+        failed and removed from the surface — they never reach the judge or
+        the registry."""
+        failures: dict[str, str] = {}
+        for cycle in range(1, self.max_test_cycles + 1):
+            failures = dict(self.tracer.act(
+                "test every tool with generated sample calls",
+                f"tester({adapter_path.name}) via test model "
+                f"(cycle {cycle}/{self.max_test_cycles})",
+                lambda: self.tester(adapter_path, list(proposals))) or {})
+            if not failures:
+                self.tracer.record(
+                    f"adapter testing cycle {cycle}/{self.max_test_cycles}",
+                    "execute sample calls for all tools",
+                    f"all {len(proposals)} tools pass", kind="test")
+                return
+            self.test_cycles = cycle
+            if cycle < self.max_test_cycles and self._fix_adapter(
+                    adapter_path, proposals, failures):
+                continue                            # fixed something — re-test
+            break                                   # loop exhausted / no fix applies
+        self.tracer.record(
+            f"{len(failures)} tool(s) still failing after {self.test_cycles} "
+            f"test cycle(s)",
+            "mark failed and remove from the surface (terminal for those tools)",
+            f"removed: {', '.join(sorted(failures))}", kind="fix")
+        proposals[:] = [p for p in proposals if p.tool_name not in failures]
+        if not proposals:
+            self._reject("not-convertible",
+                         "every tool failed adapter testing",
+                         [f"{t}: {e}" for t, e in failures.items()])
+        self._codegen_adapter(proposals)
+        self._render_format_with_fixes(proposals)
+        self._save_proposals(proposals)
+
+    def _fix_adapter(self, adapter_path: Path, proposals: list[ToolProposal],
+                     failures: dict[str, str]) -> bool:
+        """Bounded fix strategies for failing tools — deterministic mutations,
+        then the LLM directive tier, then an LLM code patch. A code patch is
+        accepted ONLY if it re-passes the static gate (py_compile + INV-1 lint
+        + contract), so an LLM-written fix cannot weaken INV-1. Returns True
+        if the adapter changed and a re-test is worthwhile."""
+        findings = [f"tool {name} failed its sample call: {err}"
+                    for name, err in failures.items()]
+        if self._repair_from_findings(findings, proposals, adapter_path):
+            return True
+        if self.repairer:
+            directive = self.tracer.act(
+                "deterministic fixes exhausted — LLM repair tier (automatic)",
+                f"repairer({'; '.join(findings)}) via {JUDGE_MODEL}",
+                partial(self.repairer, findings, list(proposals),
+                        {"stage": "test", "cycle": self.test_cycles}))
+            if self._apply_directive(directive, proposals):
+                if not proposals:
+                    self._reject("not-convertible",
+                                 "LLM repair removed every tool from the surface",
+                                 findings)
+                self._codegen_adapter(proposals)
+                self._render_format_with_fixes(proposals)
+                self._save_proposals(proposals)
+                return True
+        if self.fixer:
+            patched = self.tracer.act(
+                "LLM code fix for the failing wrappers",
+                f"fixer({adapter_path.name}) via test model",
+                lambda: self.fixer(adapter_path.read_text(), failures))
+            if patched:
+                problems = _static_gate(patched)
+                if not problems:
+                    adapter_path.write_text(patched)
+                    self.tracer.record(
+                        "LLM code fix accepted",
+                        "static gate re-run on the patched source",
+                        "gate clean — re-testing", kind="fix")
+                    return True
+                self.tracer.record(
+                    "LLM code fix REJECTED by the static gate",
+                    "patched source must pass py_compile + INV-1 lint + contract",
+                    "; ".join(problems), kind="fix")
+        return False
+
     # --------------------------------------------------------- rejection
     def _reject(self, code: str, detail: str, findings: list[str] | None = None):
         """Terminal fail-closed outcome (INV-6): record, trace, raise.
@@ -753,9 +942,14 @@ class ConverterAgent:
     def _mod_name(self) -> str:
         return re.sub(r"[^a-z0-9]+", "_", self.package.lower()).strip("_")
 
+    def _import_name(self) -> str:
+        if self._resolved_import is None:
+            self._resolved_import = resolve_import_name(self.package)
+        return self._resolved_import
+
     def _version(self) -> str:
         try:
-            return importlib.import_module(self.package).__version__ or "0"
+            return importlib.metadata.version(self.package)
         except Exception:
             return "0"
 
@@ -832,6 +1026,7 @@ def production_merger(ctx, module_name: str):
             ctx.registry.set_state(name, "live")
             ctx.store.tools.upsert(name, "live", module_name, "python", version_id)
         ctx.audit.record("merge", "converter", {"module": module_name, "tools": tools})
+        ctx.kick_search_sync()  # F-040: insert the new tools into tool_embeddings
         return f"auto-merged {module_name}: {len(tools)} tools live"
 
     return _merge
@@ -880,6 +1075,123 @@ def llm_repairer(settings):
         return directive or None
 
     return repair
+
+
+def llm_tester(settings):
+    """Adapter tool-testing seam (test model): for every proposed tool, the
+    model generates realistic sample arguments, the generated adapter is
+    imported from the workdir, args are validated against the tool's pydantic
+    input model, and the handler is executed. Returns {tool_name: error} for
+    the FAILING tools only (empty dict = all pass)."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.tokenfactory import TokenFactoryClient
+
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                                timeout_s=settings.tf_timeout_s)
+
+    def test(adapter_path: Path, proposals: list[ToolProposal]) -> dict[str, str]:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            f"adapter_test_{adapter_path.stem}", adapter_path)
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            return {p.tool_name: f"adapter import failed: {type(exc).__name__}: {exc}"
+                    for p in proposals}
+        failures: dict[str, str] = {}
+        for p in proposals:
+            handler = getattr(module, p.tool_name, None)
+            if handler is None:
+                failures[p.tool_name] = "handler missing from generated adapter"
+                continue
+            sample = _sample_args(client, settings.tf_test_model, p)
+            if sample is None:
+                failures[p.tool_name] = "sample-argument generation failed"
+                continue
+            model = getattr(module, p.model_name, None)
+            if model is not None:
+                try:
+                    sample = model(**sample).model_dump()
+                except Exception as exc:
+                    failures[p.tool_name] = (
+                        f"input validation failed: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}")
+                    continue
+            try:
+                handler(None, **sample)
+            except Exception as exc:
+                failures[p.tool_name] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        return failures
+
+    return test
+
+
+def _sample_args(client, model: str, proposal: ToolProposal) -> dict | None:
+    """Test model generates one realistic sample-argument set for a tool."""
+    from agents.tokenfactory import InferenceError
+
+    if not proposal.args:
+        return {}
+    spec = ", ".join(
+        f"{a.name}: {a.type}"
+        + (f" = {a.default}" if a.default is not None else " (required)")
+        for a in proposal.args)
+    prompt = (
+        f"Generate realistic test arguments for '{proposal.tool_name}' — "
+        f"{proposal.description}\n"
+        f"Arguments: {spec}\n"
+        "Respond with ONLY a JSON object mapping argument names to values."
+    )
+    try:
+        completion = client.chat(model, [{"role": "user", "content": prompt}],
+                                 max_tokens=2048)
+        text = completion.content.strip()
+        if text.startswith("```"):
+            text = text.strip("`").removeprefix("json").strip()
+        data = json.loads(text)
+    except (InferenceError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    known = {a.name for a in proposal.args}
+    return {k: v for k, v in data.items() if k in known}
+
+
+def llm_fixer(settings):
+    """LLM adapter code-fix seam (test model): current adapter source +
+    failures -> patched source. The caller re-runs the static gate on the
+    patch before accepting it (INV-1 cannot be weakened by a fix)."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.tokenfactory import InferenceError, TokenFactoryClient
+
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                                timeout_s=settings.tf_timeout_s)
+
+    def fix(source: str, failures: dict[str, str]) -> str | None:
+        prompt = (
+            "This generated MCP tool adapter has failing tools. Fix the wrapper "
+            "code without changing the overall structure or removing tools.\n\n"
+            "FAILURES:\n"
+            + "\n".join(f"- {tool}: {err}" for tool, err in failures.items())
+            + f"\n\nADAPTER SOURCE:\n```python\n{source}\n```\n\n"
+            "Respond with ONLY the complete corrected Python source."
+        )
+        try:
+            completion = client.chat(
+                settings.tf_test_model, [{"role": "user", "content": prompt}],
+                max_tokens=32768)
+            text = completion.content.strip()
+            if text.startswith("```"):
+                text = text.strip("`").removeprefix("python").strip()
+        except InferenceError:
+            return None
+        return text or None
+
+    return fix
 
 
 def llm_proposer(settings):
@@ -1021,6 +1333,44 @@ def _demo_proposer(mode: str):
     raise ValueError(mode)
 
 
+def _demo_tester(mode: str):
+    """Demo adapter tester: trivial sample args per declared type (str→"x",
+    int→1, ...) for required params, then executes each handler in-process.
+    Real deployments inject the test-model seam (llm_tester)."""
+    if mode == "llm-demo":
+        samples = {"str": "x", "int": 1, "float": 1.0, "bool": True,
+                   "dict": {}, "list": []}
+
+        def test(adapter_path, proposals) -> dict[str, str]:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                f"demo_adapter_{adapter_path.stem}", adapter_path)
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+            except Exception as exc:
+                return {p.tool_name: f"adapter import failed: {type(exc).__name__}"
+                        for p in proposals}
+            failures: dict[str, str] = {}
+            for p in proposals:
+                handler = getattr(module, p.tool_name, None)
+                if handler is None:
+                    failures[p.tool_name] = "handler missing from generated adapter"
+                    continue
+                args = {
+                    a.name: samples.get(a.type.replace(" | None", ""), "x")
+                    for a in p.args if a.default is None
+                }
+                try:
+                    handler(None, **args)
+                except Exception as exc:
+                    failures[p.tool_name] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            return failures
+        return test
+    raise ValueError(mode)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ReAct package → MCP tools converter (fully autonomous)")
     ap.add_argument("package")
@@ -1033,6 +1383,9 @@ def main() -> int:
                     help="demo LLM repair tier; omit = deterministic strategies only")
     ap.add_argument("--proposer", choices=["llm-demo"], default=None,
                     help="demo LLM proposal fallback for zero-surface packages")
+    ap.add_argument("--tester", choices=["llm-demo"], default=None,
+                    help="demo adapter tester (sample-arg execution); omit = skip "
+                         "the test stage")
     ap.add_argument("--demo-fault", action="store_true")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--resume", action="store_true")
@@ -1045,6 +1398,7 @@ def main() -> int:
         merger=lambda path: f"auto-merged {path.name} → tools live (simulated)",
         repairer=_demo_repairer(args.repairer) if args.repairer else None,
         proposer=_demo_proposer(args.proposer) if args.proposer else None,
+        tester=_demo_tester(args.tester) if args.tester else None,
         workdir=args.workdir, resume=args.resume, stream=args.stream)
     result = None
     try:
@@ -1059,7 +1413,7 @@ def main() -> int:
         agent.tracer.print_all()
     if result:
         print(f"\nverdict={result.verdict} fix_cycles={result.fix_cycles} "
-              f"judge_cycles={result.judge_cycles}")
+              f"judge_cycles={result.judge_cycles} test_cycles={result.test_cycles}")
         print(f"tools: {', '.join(result.tools)}")
         print(f"artifacts: {result.adapter_path} · {result.format_path}")
         print(f"trace: {agent.workdir / 'react_trace.jsonl'}")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +22,7 @@ from core.db import Store
 from core.logging import JsonlLogger, Metrics, fmt_obj, get_logger, new_call_id
 from core.sandbox.runner import CallRequest, SubprocessRunner
 from core.secrets import SecretsBroker
-from core.serialization import normalize_result
+from core.serialization import encode_bytes_args, normalize_result
 from core.sizing import SizingProfile, profile_for_settings
 from core.workspace import Workspace
 from server.auth import BearerAuthMiddleware, TokenStore, current_token
@@ -48,6 +49,16 @@ class AppContext:
         self.audit = AuditLedger(self.store.audit, settings.audit_jsonl)
         self.registry = ToolRegistry(self.store, settings.data_dir)
         self.registry.load()
+        # F-040: semantic search index. Sync runs off the boot path so a slow
+        # embedding endpoint cannot blow the cold-start budget (F-037); a
+        # failed sync leaves the index dirty and search retries lazily.
+        from agents.embeddings import select_provider
+        from agents.search import ToolSearchIndex
+
+        self.search = ToolSearchIndex(self.store, select_provider(settings))
+        threading.Thread(
+            target=self._sync_search_index, daemon=True, name="protox-search-sync"
+        ).start()
         self.workspace = Workspace(settings.workspace_root)
         # F-038: compute the host-derived profile once; print + audit-log it.
         self.sizing: SizingProfile = profile_for_settings(settings)
@@ -86,6 +97,24 @@ class AppContext:
             self.workspace.root,
         )
         log.debug("sizing profile: %s", fmt_obj(self.sizing.to_dict()))
+
+    def _sync_search_index(self) -> None:
+        try:
+            self.search.sync(self.registry.list_tools(include_non_live=True))
+        except Exception:
+            log.warning("background search sync failed", exc_info=True)
+
+    def mark_search_dirty(self) -> None:
+        """F-040: call after any registry mutation (merge/remove/clear-drafts)."""
+        self.search.mark_dirty()
+
+    def kick_search_sync(self) -> None:
+        """F-040: mark dirty and re-embed in the background so newly merged
+        tools land in tool_embeddings immediately (never blocks the merge)."""
+        self.search.mark_dirty()
+        threading.Thread(
+            target=self._sync_search_index, daemon=True, name="protox-search-sync"
+        ).start()
 
     def _apply_policy_overrides(self) -> None:
         """F-032: preset per-tool overrides (e.g. strict disables http_*)."""
@@ -141,7 +170,7 @@ class AppContext:
             req = CallRequest(
                 adapter_module=spec_adapter_module(self.registry, tool_name),
                 tool_name=tool_name,
-                args=validated.model_dump(),
+                args=encode_bytes_args(validated.model_dump()),
                 workspace=str(self.workspace.root),
                 timeout_s=spec.timeout_s or self.settings.default_timeout_s,
                 network=spec.network,

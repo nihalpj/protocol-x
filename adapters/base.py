@@ -72,3 +72,54 @@ class ToolSpec:
 #   TOOLS: list[ToolSpec]
 #   def get_tools() -> list[ToolSpec]
 ADAPTER_ATTRS = ("get_tools", "TOOLS")
+
+
+def normalize_value(value: Any) -> Any:
+    """Make a wrapped function's return value JSON-native and stable.
+
+    bytes decode as UTF-8 when possible (agents read text), otherwise they are
+    base64-tagged; tuples/sets/frozensets become lists; namedtuples and
+    dataclasses become dicts. Anything else keeps a type label and a repr with
+    the memory address stripped so output is stable between calls.
+    """
+    import base64
+    import dataclasses
+    import re
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"_bytes_b64": base64.b64encode(raw).decode()}
+    if isinstance(value, dict):
+        return {k: normalize_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [normalize_value(v) for v in value]
+    if hasattr(value, "_asdict"):  # namedtuple
+        return normalize_value(value._asdict())
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return normalize_value(dataclasses.asdict(value))
+    return {
+        "_type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "_repr": re.sub(r" at 0x[0-9a-fA-F]+", "", str(value)),
+    }
+
+
+def wrap_tool_result(result: Any) -> dict[str, Any]:
+    """Uniform handler return contract for generated adapters.
+
+    HTTP-response-like objects (httpx/requests) keep their dedicated shape,
+    with the body capped so a huge page cannot blow up the tool result.
+    """
+    if hasattr(result, "status_code") and hasattr(result, "text"):
+        return {
+            "result": {
+                "status_code": result.status_code,
+                "headers": dict(result.headers),
+                "text": result.text[:65536],
+            }
+        }
+    return {"result": normalize_value(result)}

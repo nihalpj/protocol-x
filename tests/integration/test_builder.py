@@ -170,6 +170,25 @@ def test_blocked_verdict_moves_drafts_to_blocked(builder, ctx, monkeypatch):
     assert ctx.store.tools.get("json_loads")["state"] == "live"
 
 
+def test_introspect_mines_detailed_descriptions():
+    """F-040: introspection mines the full summary paragraph + numpy-style
+    per-parameter docs instead of a truncated first line + placeholders."""
+    candidates = {c.name: c for c in introspect_package("numpy")}
+    arr = candidates["asarray"]
+    assert arr.doc == "Convert the input to an array."
+    args = {a["name"]: a for a in arr.args}
+    assert args["a"]["description"].startswith("Input data, in any form")
+
+
+def test_generate_writes_detailed_descriptions(builder):
+    """F-040: the generated adapter carries the full summary paragraph in the
+    ToolSpec description (this text lands in tool_embeddings for search)."""
+    result = builder.generate("json", ["loads"])
+    source = Path(result["path"]).read_text()
+    assert static_gate(source) == []
+    assert "containing a JSON document" in source  # beyond the old first-line cut
+
+
 @pytest.fixture(autouse=True)
 def _cleanup_generated(ctx):
     yield

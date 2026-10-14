@@ -166,6 +166,57 @@ def test_audit_dual_write(tmp_path):
     store.close()
 
 
+def test_m007_tested_stage_and_test_cycles(tmp_path):
+    """m007: the converter's 'tested' checkpoint stage is recordable and
+    conversion_runs persists test_cycles."""
+    store = Store(tmp_path / "protox.db")
+    run_id = store.runs.open("requests", "/tmp/wd", "/tmp/wd/trace.jsonl")
+    store.checkpoints.save(run_id, "tested", {"tools": ["a"], "cycle": 2})
+    cp = store.checkpoints.load(run_id)
+    assert cp["stage"] == "tested"
+    store.runs.close(run_id, "merged", fix_cycles=0, judge_cycles=1, test_cycles=2)
+    run = store.runs.get(run_id)
+    assert run["test_cycles"] == 2
+    store.close()
+
+
+def test_m007_upgrade_preserves_checkpoints(tmp_path):
+    """A pre-m007 database upgrades in place: checkpoint rows survive the
+    checkpoints table rebuild."""
+    from core.db import _MIGRATIONS_DIR, connect
+
+    db = tmp_path / "protox.db"
+    conn = connect(db)
+    for name in ("m001_initial", "m002_repair_healed",
+                 "m003_conversion_outcome_vocab", "m004_custom_wrapper_source",
+                 "m005_blocked_tool_state", "m006_tool_embeddings"):
+        conn.executescript((_MIGRATIONS_DIR / f"{name}.sql").read_text())
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_ts) VALUES (?, 1.0)",
+            (name,),
+        )
+    conn.execute(
+        "INSERT INTO conversion_runs(package, workdir, trace_path, started_ts) "
+        "VALUES ('pyjwt', '/tmp/wd', '/tmp/wd/trace.jsonl', 1.0)"
+    )
+    conn.execute(
+        "INSERT INTO checkpoints(run_id, stage, payload_json, ts) "
+        "VALUES (1, 'format', '{}', 1.0)"
+    )
+    conn.close()
+
+    store = Store(db)  # applies m007
+    cp = store.checkpoints.load(1)
+    assert cp["stage"] == "format"  # row preserved through the rebuild
+    store.checkpoints.save(1, "tested", {"cycle": 1})  # new stage writable
+    assert store.checkpoints.load(1)["stage"] == "tested"
+    # old vocabulary still rejected
+    store2_run = store.runs.open("x", "/tmp/wd2", "/tmp/wd2/trace.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.checkpoints.save(store2_run, "bogus-stage", {})
+    store.close()
+
+
 def _root():
     import core
 

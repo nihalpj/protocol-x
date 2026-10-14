@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, useApi } from "@/api";
+import type { SearchHit } from "@/api";
 import { cn, STATE_DOT, STATE_BADGE } from "@/lib/format";
 import type { ToolRow } from "@/lib/types";
 import {
@@ -18,7 +19,7 @@ function limitChips(limits: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(limits).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
 }
 
-function ToolCard({ tool, open, onToggle }: { tool: ToolRow; open: boolean; onToggle: () => void }) {
+function ToolCard({ tool, open, onToggle, score }: { tool: ToolRow; open: boolean; onToggle: () => void; score?: number }) {
   const limits = limitChips(tool.limits);
   return (
     <div className="overflow-hidden rounded-lg border border-[#e4e4e7] bg-white">
@@ -27,6 +28,11 @@ function ToolCard({ tool, open, onToggle }: { tool: ToolRow; open: boolean; onTo
         <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: STATE_DOT[tool.state] ?? "#a1a1aa" }} />
         <span className="mono shrink-0 text-[11px] font-medium text-[#18181b]">{tool.name}</span>
         <span className="min-w-0 flex-1 truncate text-[10.5px] text-[#71717a]">{tool.description}</span>
+        {score !== undefined && (
+          <span className="mono shrink-0 rounded bg-[#eef2ff] px-1.5 py-px text-[8.5px] font-semibold text-[#5e6ad2]">
+            semantic {score.toFixed(2)}
+          </span>
+        )}
         <span className={cn("shrink-0 rounded px-1.5 py-px text-[8.5px] font-semibold uppercase", STATE_BADGE[tool.state])}>
           {tool.state}
         </span>
@@ -101,8 +107,35 @@ export function Registry({ onOpenAdd }: Props) {
   const [query, setQuery] = useState("");
   const [adapterFilter, setAdapterFilter] = useState<string>("all");
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [semantic, setSemantic] = useState<{ hits: SearchHit[]; backend: string } | null>(null);
 
   const tools = useMemo(() => toolsQ.data?.tools ?? [], [toolsQ.data]);
+
+  // F-040: debounce a semantic search once the query is specific enough;
+  // any failure falls back silently to the client-side substring filter.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 3) {
+      setSemantic(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      api
+        .search(q)
+        .then((r) => setSemantic({ hits: r.results, backend: r.backend }))
+        .catch(() => setSemantic(null));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const semanticRows = useMemo(() => {
+    if (!semantic) return null;
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    return semantic.hits
+      .map((h) => ({ row: byName.get(h.name), score: h.score }))
+      .filter((x): x is { row: ToolRow; score: number } => x.row !== undefined)
+      .filter((x) => adapterFilter === "all" || x.row.adapter_module === adapterFilter);
+  }, [semantic, tools, adapterFilter]);
 
   const adapters = useMemo(() => {
     const set = new Set(tools.map((t) => t.adapter_module));
@@ -170,7 +203,32 @@ export function Registry({ onOpenAdd }: Props) {
         {toolsQ.error && !toolsQ.loading && (
           <div className="py-10 text-center text-[11px] text-[#b91c1c]">failed to load registry: {toolsQ.error}</div>
         )}
-        {groups.map(({ adapter, tools: list }) => (
+        {!toolsQ.loading && !toolsQ.error && semanticRows && (
+          <div className="mb-3">
+            <div className="mb-1.5 flex items-center gap-2 px-1">
+              <span className="mono text-[11px] font-semibold text-[#3f3f46]">semantic results</span>
+              <span className="mono text-[9.5px] text-[#a1a1aa]">{semanticRows.length}</span>
+              {semantic && (
+                <span className="mono rounded bg-[#eef2ff] px-1.5 py-px text-[8.5px] font-semibold uppercase text-[#5e6ad2]">
+                  {semantic.backend}
+                </span>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {semanticRows.map(({ row, score }) => (
+                <ToolCard
+                  key={row.name}
+                  tool={row}
+                  score={score}
+                  open={!!open[row.name]}
+                  onToggle={() => setOpen((o) => ({ ...o, [row.name]: !o[row.name] }))}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        {!semanticRows &&
+          groups.map(({ adapter, tools: list }) => (
           <div key={adapter} className="mb-3">
             <div className="mb-1.5 flex items-center gap-2 px-1">
               <span className="mono text-[11px] font-semibold text-[#3f3f46]">{adapter}</span>
@@ -188,8 +246,11 @@ export function Registry({ onOpenAdd }: Props) {
             </div>
           </div>
         ))}
-        {!toolsQ.loading && !toolsQ.error && groups.length === 0 && (
+        {!toolsQ.loading && !toolsQ.error && !semanticRows && groups.length === 0 && (
           <div className="py-10 text-center text-[11px] text-[#a1a1aa]">no tools match the current filters</div>
+        )}
+        {semanticRows && semanticRows.length === 0 && (
+          <div className="py-10 text-center text-[11px] text-[#a1a1aa]">no semantic matches — try different words</div>
         )}
       </div>
     </section>

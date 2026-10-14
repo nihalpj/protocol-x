@@ -8,9 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 import multidict  # introspected installed package, v7.1.0
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec
+from adapters.base import ADAPTER_ERROR, ToolError, ToolSpec, wrap_tool_result
 
 
 class MultidictGetIncludeIn(BaseModel):
@@ -25,17 +25,33 @@ def multidict_get_include(ws) -> dict[str, Any]:
     Limits: timeout 30s, sandboxed worker.
     """
     try:
-        result = multidict.get_include(
-        )
+        result = multidict.get_include()
     except ToolError:
         raise
     except Exception as exc:  # INV-4: structured errors; traceback stays server-side
         raise ToolError(ADAPTER_ERROR, f"get_include failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
-    if hasattr(result, "status_code") and hasattr(result, "text"):
-        # HTTP-response-like object (httpx/requests): return the useful parts,
-        # body capped so a huge page cannot blow up the tool result.
-        return {"result": {"status_code": result.status_code, "headers": dict(result.headers), "text": result.text[:65536]}}
-    return {"result": result if isinstance(result, (dict, list, str, int, float, bool)) or result is None else str(result)}
+    return wrap_tool_result(result)
+
+
+class MultidictGetversionIn(BaseModel):
+    """Input schema for multidict_getversion."""
+
+    model_config = ConfigDict(extra="forbid")
+    object: str = Field(description="object argument")
+
+
+def multidict_getversion(ws, *, object: str) -> dict[str, Any]:
+    """getversion() from multidict
+
+    Limits: timeout 30s, sandboxed worker.
+    """
+    try:
+        result = multidict.getversion()
+    except ToolError:
+        raise
+    except Exception as exc:  # INV-4: structured errors; traceback stays server-side
+        raise ToolError(ADAPTER_ERROR, f"getversion failed: {type(exc).__name__}", {"exception": type(exc).__name__}) from exc
+    return wrap_tool_result(result)
 
 
 TOOLS = [
@@ -44,6 +60,14 @@ TOOLS = [
         description="Return the directory containing multidict's C API headers. (limits: timeout 30s, sandboxed)",
         input_model=MultidictGetIncludeIn,
         handler=multidict_get_include,
+        timeout_s=30,
+        network=False,
+    ),
+    ToolSpec(
+        name="multidict_getversion",
+        description="getversion() from multidict (limits: timeout 30s, sandboxed)",
+        input_model=MultidictGetversionIn,
+        handler=multidict_getversion,
         timeout_s=30,
         network=False,
     ),
