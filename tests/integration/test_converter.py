@@ -120,6 +120,23 @@ def test_namespace_package_scans_submodules(workdir):
     assert any("." in p.target for p in proposals)
 
 
+def test_code_shaped_params_screened_at_proposal_time(workdir):
+    """INV-1: params that look like free-form code/query strings
+    (expr/code/query_string/...) are screened out when the surface is
+    proposed — a required one condemns the function, a defaulted one is
+    skipped like any other unusable param — so pandas.eval-style tools never
+    reach the codegen static gate."""
+    mod = types.ModuleType("fakepkg")
+    exec("def evaluate(expr: str) -> str:\n    return expr\n"
+         "def render(template: str, script: str = '') -> str:\n    return template",
+         mod.__dict__)
+    agent = ConverterAgent("fakepkg", workdir=workdir)
+    proposals = agent._propose(mod)
+    assert [p.target for p in proposals] == ["render"]
+    assert [a.name for a in proposals[0].args] == ["template"]
+    assert proposals[0].skipped == ["script"]
+
+
 def test_non_literal_default_skipped_not_fatal(workdir):
     """A param with a non-literal default is skipped (package default
     applies) instead of condemning the whole function."""

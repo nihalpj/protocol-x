@@ -5,6 +5,25 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Load secrets (PROTOX_TOKENS, PROTOX_TF_API_KEY, ...) from an env file so
+# they don't need to be exported by hand. PROTOX_ENV_FILE wins, then the
+# repo-root .env, then the sibling dev-workspace .env.
+ENV_FILE="${PROTOX_ENV_FILE:-}"
+if [[ -z "$ENV_FILE" ]]; then
+  for candidate in ".env" "../protox-data/.env"; do
+    if [[ -f "$candidate" ]]; then
+      ENV_FILE="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+  set +a
+fi
+
 TRANSPORT="${1:-http}"
 case "$TRANSPORT" in
   http|stdio) ;;

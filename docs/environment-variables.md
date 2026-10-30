@@ -7,6 +7,7 @@ Config-file auto-discovery: with no `--config` flag and no `PROTOX_CONFIG`, `Set
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PROTOX_CONFIG` | — | Path to a `server.yaml` config file; overrides the auto-discovered `<data_dir>/server.yaml`. |
+| `PROTOX_ENV_FILE` | — | (`scripts/start.sh` only, not read by the server) Path to a `KEY=VALUE` env file sourced at startup so secrets like `PROTOX_TOKENS`/`PROTOX_TF_API_KEY` don't need a manual export. When unset, `start.sh` auto-loads the first of `./.env`, `../protox-data/.env` that exists. |
 | `PROTOX_DATA_DIR` | `~/.local/share/protocol-x` | Root for all server state: `protox.db` (SQLite), `audit.jsonl`, `logs/tool-calls.jsonl`, `catalog_cache.json`, `conversions/`, `versions/`. |
 | `PROTOX_WORKSPACE` | `<data_dir>/workspace` | The single confined file root for all tool I/O (INV-5); `..` escapes and foreign absolute paths are rejected. |
 | `PROTOX_HOST` | `127.0.0.1` | HTTP transport bind address (`--host` wins). |

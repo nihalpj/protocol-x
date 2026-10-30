@@ -110,7 +110,14 @@ try:
         py_schema_type,
         sanitize_description,
     )
+    # Code-shaped param names the INV-1 lint blocks (expr, code, ...); shared
+    # so the proposal surface is screened with the same vocabulary the gate
+    # enforces — single source of truth, no drift.
+    from agents.lint import _CODE_PARAM_NAMES
 except ImportError:  # standalone demo runs without the server tree
+    _CODE_PARAM_NAMES = {"code", "expression", "expr", "query_string",
+                         "script", "program", "source_code"}
+
 
     def py_schema_type(annotation) -> str | None:
         if annotation is inspect.Parameter.empty:
@@ -514,9 +521,13 @@ class ConverterAgent:
         carry non-literal defaults are *skipped* — the package's own defaults
         apply — instead of condemning the whole function; the schema type of
         an unannotated param is inferred from its literal default (a bool
-        default maps to bool, never "str"). Returns None only when a required
-        param cannot be typed honestly, or when skipping an earlier param
-        would shift positional-only args out of order.
+        default maps to bool, never "str"). Params named like free-form
+        code/query strings (`expr`, `code`, `query_string`, … — the lint's
+        `_CODE_PARAM_NAMES`) are screened out for INV-1: skipped when
+        defaulted, function-condemning when required. Returns None only when
+        a required param cannot be typed honestly or is code-shaped, or when
+        skipping an earlier param would shift positional-only args out of
+        order.
         """
         try:
             params = list(inspect.signature(fn).parameters.values())
@@ -535,6 +546,16 @@ class ConverterAgent:
             type_name = py_schema_type(p.annotation)
             default: str | None = None
             has_default = p.default is not inspect.Parameter.empty
+            if p.name.lower() in _CODE_PARAM_NAMES:
+                # INV-1: free-form code/query strings can never become tool
+                # args (pandas.eval-style). A defaulted one is skipped like
+                # any other unusable param; a required one condemns the
+                # function — better than proposing it and letting the codegen
+                # gate drop the whole tool.
+                if has_default:
+                    skipped.append(p.name)
+                    continue
+                return None
             if has_default:
                 default = literal_default(p.default)
             if type_name is None or (has_default and default is None):

@@ -1,12 +1,14 @@
 import asyncio
 import json
+import os
 import sys
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 URL = "http://127.0.0.1:7894/mcp"
-HEADERS = {"Authorization": "Bearer ***REMOVED***"}
+TOKEN = os.environ.get("PROTOX_TOKENS", "").split(",")[0].strip()
+HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 
 PASS, FAIL = 0, 0
 
