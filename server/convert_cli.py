@@ -15,6 +15,7 @@ from pathlib import Path
 from agents.converter_agent import (
     ConversionRejected,
     ConverterAgent,
+    llm_describer,
     llm_fixer,
     llm_proposer,
     llm_repairer,
@@ -79,6 +80,7 @@ def run_convert(package: str, settings, *, focus: str | None = None,
         proposer=llm_proposer(settings),
         tester=llm_tester(settings) if settings.testing_enabled else None,
         fixer=llm_fixer(settings),
+        describer=llm_describer(settings),
         workdir=workdir, resume=resume, stream=stream,
         store=store, run_id=run_id, resume_stage=resume_stage,
         max_test_cycles=settings.testing_max_cycles)

@@ -110,6 +110,7 @@ try:
         py_schema_type,
         sanitize_description,
     )
+
     # Code-shaped param names the INV-1 lint blocks (expr, code, ...); shared
     # so the proposal surface is screened with the same vocabulary the gate
     # enforces — single source of truth, no drift.
@@ -363,6 +364,7 @@ class ConverterAgent:
     def __init__(self, package: str, focus: str | None = None,
                  demo_fault: bool = False, judge=None, merger=None,
                  repairer=None, proposer=None, tester=None, fixer=None,
+                 describer=None,
                  workdir: str | Path | None = None, resume: bool = False,
                  stream: bool = False, store=None, run_id: int | None = None,
                  resume_stage: str | None = None,
@@ -378,10 +380,12 @@ class ConverterAgent:
         # proposer(module) -> list[ToolProposal]
         # tester(adapter_path, proposals) -> {tool_name: error} (failures only)
         # fixer(adapter_source, failures) -> patched source | None (re-gated on accept)
+        # describer(proposals) -> {tool_name: {"description": str, "args": {param: str}}}
         self.repairer = repairer
         self.proposer = proposer
         self.tester = tester
         self.fixer = fixer
+        self.describer = describer
         self.max_test_cycles = max_test_cycles
         # DB seams (optional): conversion_runs row + durable checkpoints (AC-P7-05).
         self.store = store
@@ -449,6 +453,7 @@ class ConverterAgent:
                              "usage-ranked introspection")
             log.info("converter: %d tool proposals for %s", len(proposals), self.package)
             log.debug("proposals: %s", fmt_obj([p.tool_name for p in proposals]))
+            self._enrich_descriptions(proposals)
             self._save_proposals(proposals)
             self._checkpoint("proposed")
 
@@ -512,6 +517,54 @@ class ConverterAgent:
             if len(out) >= MAX_TOOLS:
                 break
         return out
+
+    # ------------------------------------- step: describe (LLM enrichment)
+    def _enrich_descriptions(self, proposals: list[ToolProposal]) -> None:
+        """Replace generic fallback descriptions with LLM-written text.
+
+        Fill-gaps policy: docstring-mined text is authoritative — a tool or
+        parameter description is replaced only when it is one of the generic
+        fallbacks ('<target>() from <package>', '<name> argument', or empty).
+        Enrichment must never fail a conversion: a missing/broken describer
+        seam keeps the existing descriptions."""
+        if not self.describer or not proposals:
+            return
+        try:
+            provided = self.describer(list(proposals))
+        except Exception as exc:
+            log.warning("describer seam failed (%s: %s) — keeping existing descriptions",
+                        type(exc).__name__, exc)
+            return
+        if not isinstance(provided, dict):
+            return
+        enriched_tools = 0
+        enriched_args = 0
+        for p in proposals:
+            entry = provided.get(p.tool_name)
+            if not isinstance(entry, dict):
+                continue
+            if p.description in ("", f"{p.target}() from {self.package}"):
+                text = sanitize_description(
+                    str(entry.get("description") or ""))[:DESC_MAX]
+                if text:
+                    p.description = text
+                    enriched_tools += 1
+            arg_docs = entry.get("args")
+            if isinstance(arg_docs, dict):
+                for a in p.args:
+                    if a.description != f"{a.name} argument":
+                        continue
+                    text = sanitize_description(
+                        str(arg_docs.get(a.name) or ""))[:ARG_DESC_MAX]
+                    if text:
+                        a.description = text
+                        enriched_args += 1
+        if enriched_tools or enriched_args:
+            self.tracer.record(
+                "generic fallback descriptions explain nothing to operators",
+                "describer(proposals) — batched LLM descriptions (fill-gaps only)",
+                f"enriched {enriched_tools} tool + {enriched_args} parameter "
+                f"descriptions")
 
     @staticmethod
     def _simple_args(fn) -> tuple[list[Arg], list[str]] | None:
@@ -1213,6 +1266,63 @@ def llm_fixer(settings):
         return text or None
 
     return fix
+
+
+def llm_describer(settings):
+    """LLM description writer (fast model): one batched call writes a plain
+    language description for every proposed tool and parameter, so generated
+    tools are understandable in the console without reading the package's
+    source. Returns {tool_name: {"description": str, "args": {param: str}}}.
+    The caller applies it fill-gaps only and re-sanitizes; parse/inference
+    failure -> None -> existing descriptions are kept (never blocks a
+    conversion)."""
+    if not settings.agent_features_enabled:
+        return None
+    from agents.tokenfactory import InferenceError, TokenFactoryClient
+
+    client = TokenFactoryClient(settings.tf_api_key, settings.tf_endpoint,
+                                timeout_s=settings.tf_timeout_s)
+
+    def describe(proposals: list[ToolProposal]) -> dict | None:
+        lines = []
+        for p in proposals:
+            spec = ", ".join(
+                f"{a.name}: {a.type}"
+                + (f" = {a.default}" if a.default is not None else " (required)")
+                for a in p.args) or "no arguments"
+            lines.append(f"- {p.tool_name}: calls {p.target}(); args: {spec}")
+        prompt = (
+            "These MCP tools were generated from a Python package:\n"
+            + "\n".join(lines)
+            + "\nWrite a clear plain-language description of what each tool "
+            "does (max 2 sentences) and of each argument (max 1 line), for an "
+            "operator browsing a tool registry. Respond with ONLY a JSON array: "
+            '[{"tool_name": "<name>", "description": "<no quotes>", '
+            '"args": {"<param>": "<no quotes>"}}]'
+        )
+        try:
+            completion = client.chat(
+                settings.tf_fast_model, [{"role": "user", "content": prompt}],
+                max_tokens=8192)
+            text = completion.content.strip()
+            if text.startswith("```"):
+                text = text.strip("`").removeprefix("json").strip()
+            data = json.loads(text)
+        except (InferenceError, json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, list):
+            return None
+        out: dict = {}
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("tool_name"), str):
+                continue
+            entry: dict = {"description": str(item.get("description") or "")}
+            if isinstance(item.get("args"), dict):
+                entry["args"] = {str(k): str(v) for k, v in item["args"].items()}
+            out[item["tool_name"]] = entry
+        return out or None
+
+    return describe
 
 
 def llm_proposer(settings):

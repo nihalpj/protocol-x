@@ -19,8 +19,31 @@ function limitChips(limits: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(limits).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
 }
 
+interface ParamRow {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string;
+}
+
+function paramRows(tool: ToolRow): ParamRow[] {
+  const schema = tool.schema as {
+    properties?: Record<string, { type?: string | string[]; description?: string }>;
+    required?: string[];
+  };
+  const props = schema?.properties ?? {};
+  const required = new Set(schema?.required ?? []);
+  return Object.entries(props).map(([name, def]) => ({
+    name,
+    type: Array.isArray(def?.type) ? def.type.join(" | ") : def?.type ?? "any",
+    required: required.has(name),
+    description: def?.description || "",
+  }));
+}
+
 function ToolCard({ tool, open, onToggle, score }: { tool: ToolRow; open: boolean; onToggle: () => void; score?: number }) {
   const limits = limitChips(tool.limits);
+  const params = paramRows(tool);
   return (
     <div className="overflow-hidden rounded-lg border border-[#e4e4e7] bg-white">
       <button onClick={onToggle} className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-[#fafafa]">
@@ -41,7 +64,45 @@ function ToolCard({ tool, open, onToggle, score }: { tool: ToolRow; open: boolea
 
       {open && (
         <div className="space-y-3 border-t border-[#f4f4f5] px-3 py-2.5">
-          <p className="text-[11px] leading-relaxed text-[#3f3f46]">{tool.description || "No description."}</p>
+          <div className="rounded-md border border-[#bfccf5] bg-[#eef2ff]/40 px-2.5 py-2">
+            <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#5e6ad2]">
+              description
+            </div>
+            <p className="text-[11px] leading-relaxed text-[#3f3f46]">
+              {tool.description || "No description."}
+            </p>
+          </div>
+
+          {params.length > 0 && (
+            <div>
+              <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-[#a1a1aa]">
+                parameters
+              </div>
+              <div className="space-y-1">
+                {params.map((p) => (
+                  <div key={p.name} className="rounded-md border border-[#e4e4e7] bg-[#fafafa] px-2 py-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="mono text-[10px] font-medium text-[#18181b]">{p.name}</span>
+                      <span className="mono rounded bg-[#f4f4f5] px-1 py-px text-[9px] text-[#52525b]">
+                        {p.type}
+                      </span>
+                      <span
+                        className={cn(
+                          "rounded px-1 py-px text-[8.5px] font-semibold uppercase",
+                          p.required ? "bg-[#fee2e2] text-[#b91c1c]" : "bg-[#f4f4f5] text-[#71717a]",
+                        )}
+                      >
+                        {p.required ? "required" : "optional"}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[10.5px] leading-relaxed text-[#52525b]">
+                      {p.description || "No description."}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-1">
             <span className="mono rounded border border-[#e4e4e7] bg-[#fafafa] px-1.5 py-0.5 text-[9.5px] text-[#52525b]">
